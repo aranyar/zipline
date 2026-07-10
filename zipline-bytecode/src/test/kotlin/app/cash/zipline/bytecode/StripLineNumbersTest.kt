@@ -15,7 +15,7 @@
  */
 package app.cash.zipline.bytecode
 
-import app.cash.zipline.QuickJs
+import app.cash.zipline.JsEngine
 import assertk.assertThat
 import assertk.assertions.startsWith
 import kotlin.test.assertFailsWith
@@ -23,10 +23,10 @@ import org.junit.After
 import org.junit.Test
 
 class StripLineNumbersTest {
-  private val quickJs = QuickJs.create()
+  private val jsEngine = JsEngine.create()
 
   @After fun tearDown() {
-    quickJs.close()
+    jsEngine.close()
   }
 
   @Test fun happyPath() {
@@ -46,15 +46,15 @@ class StripLineNumbersTest {
       |
       """.trimMargin()
 
-    val bytecode = quickJs.compile(js, "demo.js")
+    val bytecode = jsEngine.compile(js, "demo.js")
     val updatedBytecode = stripLineNumbers(bytecode)
-    quickJs.execute(updatedBytecode)
+    jsEngine.execute(updatedBytecode)
     val exception = assertFailsWith<Exception> {
-      quickJs.evaluate("sayHello()")
+      jsEngine.evaluate("sayHello()")
     }
     assertThat(exception.stackTraceToString()).startsWith(
       """
-      |app.cash.zipline.QuickJsException: boom!
+      |app.cash.zipline.JsException: boom!
       |	at JavaScript.goBoom1(demo.js)
       |	at JavaScript.goBoom2(demo.js)
       |	at JavaScript.goBoom3(demo.js)

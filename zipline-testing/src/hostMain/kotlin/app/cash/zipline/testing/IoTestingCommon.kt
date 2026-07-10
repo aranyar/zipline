@@ -46,7 +46,7 @@ fun Zipline.loadTestingJs() {
   loadJsModuleFromResource("./zipline-root-zipline.js")
   loadJsModuleFromResource("./zipline-root-zipline-cryptography.js")
   loadJsModuleFromResource("./zipline-root-zipline-testing.js")
-  quickJs.evaluate("globalThis['testing'] = require('./zipline-root-zipline-testing.js');")
+  jsEngine.evaluate("globalThis['testing'] = require('./zipline-root-zipline-testing.js');")
 }
 
 private fun Zipline.loadJsModuleFromResource(fileName: String) {

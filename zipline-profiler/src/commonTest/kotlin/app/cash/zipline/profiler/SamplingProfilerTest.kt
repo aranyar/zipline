@@ -15,7 +15,7 @@
  */
 package app.cash.zipline.profiler
 
-import app.cash.zipline.QuickJs
+import app.cash.zipline.JsEngine
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -25,10 +25,10 @@ import okio.SYSTEM
 import okio.use
 
 internal class SamplingProfilerTest {
-  private val quickJs = QuickJs.create()
+  private val jsEngine = JsEngine.create()
 
   @BeforeTest fun setUp() {
-    quickJs.evaluate(
+    jsEngine.evaluate(
       """
       |function fib0() {
       |  return 1;
@@ -72,7 +72,7 @@ internal class SamplingProfilerTest {
       """.trimMargin(),
       "smallFibs.js",
     )
-    quickJs.evaluate(
+    jsEngine.evaluate(
       """
       |function fib10() {
       |  return fib9() + fib8();
@@ -124,15 +124,15 @@ internal class SamplingProfilerTest {
   }
 
   @AfterTest fun tearDown() {
-    quickJs.close()
+    jsEngine.close()
   }
 
   /** This test just confirms the sampling profiler completes normally. */
   @Test
   fun happyPath() {
-    quickJs.startCpuSampling(FileSystem.SYSTEM, "fibonacci.hprof".toPath()).use {
+    jsEngine.startCpuSampling(FileSystem.SYSTEM, "fibonacci.hprof".toPath()).use {
       for (i in 0 until 100) {
-        quickJs.evaluate("""fib20()""".trimMargin())
+        jsEngine.evaluate("""fib20()""".trimMargin())
       }
     }
   }

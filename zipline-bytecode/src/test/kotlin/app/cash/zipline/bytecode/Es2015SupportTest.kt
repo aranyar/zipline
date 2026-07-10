@@ -15,7 +15,7 @@
  */
 package app.cash.zipline.bytecode
 
-import app.cash.zipline.QuickJs
+import app.cash.zipline.JsEngine
 import assertk.assertThat
 import assertk.assertions.startsWith
 import kotlin.test.assertFailsWith
@@ -26,11 +26,11 @@ import org.junit.Test
  * Test that we benefit from QuickJS' support for ES2015 features.
  */
 class Es2015SupportTest {
-  private val quickJs = QuickJs.create()
+  private val jsEngine = JsEngine.create()
 
   @After
   fun tearDown() {
-    quickJs.close()
+    jsEngine.close()
   }
 
   /** Confirm that when we write JS as ES2015 we get stack traces with function names in them. */
@@ -60,14 +60,14 @@ class Es2015SupportTest {
       |}
       """.trimMargin()
 
-    val bytecode = quickJs.compile(js, "demo.js")
-    quickJs.execute(bytecode)
+    val bytecode = jsEngine.compile(js, "demo.js")
+    jsEngine.execute(bytecode)
     val exception = assertFailsWith<Exception> {
-      quickJs.evaluate("new Bomb(\"boom!\").sayHello()")
+      jsEngine.evaluate("new Bomb(\"boom!\").sayHello()")
     }
     assertThat(exception.stackTraceToString()).startsWith(
       """
-      |app.cash.zipline.QuickJsException: boom!
+      |app.cash.zipline.JsException: boom!
       |	at JavaScript.goBoom1(demo.js:19:16)
       |	at JavaScript.goBoom2(demo.js:15:17)
       |	at JavaScript.goBoom3(demo.js:11:17)
