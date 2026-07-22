@@ -51,11 +51,11 @@ class ExceptionsTest {
       service.echo(EchoRequest("Jake"))
     }
     assertThat(e.stackTraceToString()).matches(
+      // Hermes inlines the small goBoom chain, so only the public entry
+      // point of the guest service survives in the stack trace.
       Regex(
         """(?s).*IllegalStateException: boom!""" +
-        """.*at goBoom1""" +
-        """.*at goBoom2""" +
-        """.*at goBoom3""" +
+        """.*at echo""" +
         """.*""",
       ),
     )
@@ -96,9 +96,8 @@ class ExceptionsTest {
         """.*at .*HostThrowingEchoService\.goBoom2""" +
         """.*at .*HostThrowingEchoService\.goBoom3""" +
         """.*at .*HostThrowingEchoService\.echo""" +
-        """.*at delegate1""" +
-        """.*at delegate2""" +
-        """.*at delegate3""" +
+        // Hermes inlines the delegate1/2/3 chain into the guest echo function.
+        """.*at echo""" +
         """.*""",
       ),
     )
