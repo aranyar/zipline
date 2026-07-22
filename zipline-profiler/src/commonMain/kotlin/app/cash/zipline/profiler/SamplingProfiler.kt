@@ -17,7 +17,7 @@ package app.cash.zipline.profiler
 
 import app.cash.zipline.EngineApi
 import app.cash.zipline.InterruptHandler
-import app.cash.zipline.QuickJs
+import app.cash.zipline.JsEngine
 import okio.Buffer
 import okio.BufferedSink
 import okio.Closeable
@@ -29,19 +29,19 @@ import okio.buffer
  * Starts collecting CPU samples and writing them to [hprofFile]. The caller must close the returned
  * object to stop collecting samples and finish writing the file.
  *
- * While sampling this replaces [QuickJs.interruptHandler] with one that captures the JavaScript
+ * While sampling this replaces [JsEngine.interruptHandler] with one that captures the JavaScript
  * stack on each interrupt poll.
  *
  * @param hprofFile a new file to write profiling data to. Typically, such files end with `.hprof`.
  */
 @EngineApi
-fun QuickJs.startCpuSampling(fileSystem: FileSystem, hprofFile: Path): Closeable {
+fun JsEngine.startCpuSampling(fileSystem: FileSystem, hprofFile: Path): Closeable {
   val bufferedSink = fileSystem.sink(hprofFile).buffer()
   return startCpuSampling(bufferedSink)
 }
 
 @EngineApi
-fun QuickJs.startCpuSampling(hprofSink: BufferedSink): Closeable {
+fun JsEngine.startCpuSampling(hprofSink: BufferedSink): Closeable {
   val samplingProfiler = SamplingProfiler(this, HprofWriter(hprofSink))
   val previousInterruptHandler = interruptHandler
   interruptHandler = samplingProfiler
@@ -55,7 +55,7 @@ fun QuickJs.startCpuSampling(hprofSink: BufferedSink): Closeable {
 }
 
 internal class SamplingProfiler internal constructor(
-  private val quickJs: QuickJs,
+  private val jsEngine: JsEngine,
   private val hprofWriter: HprofWriter,
 ) : Closeable,
   InterruptHandler {
@@ -91,7 +91,7 @@ internal class SamplingProfiler internal constructor(
   }
 
   override fun poll(): Boolean {
-    val stack = quickJs.evaluate("new Error().stack") as String
+    val stack = jsEngine.evaluate("new Error().stack") as String
     addStacktraceSample(stack)
     return false
   }

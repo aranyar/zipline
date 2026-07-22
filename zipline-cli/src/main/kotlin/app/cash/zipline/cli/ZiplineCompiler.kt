@@ -15,7 +15,7 @@
  */
 package app.cash.zipline.cli
 
-import app.cash.zipline.QuickJs
+import app.cash.zipline.JsEngine
 import app.cash.zipline.ZiplineManifest
 import app.cash.zipline.bytecode.SourceMap
 import app.cash.zipline.bytecode.applySourceMapToBytecode
@@ -110,9 +110,9 @@ internal class ZiplineCompiler(
     val outputZiplineFilePath = jsFile.nameWithoutExtension + ZIPLINE_EXTENSION
     val outputZiplineFile = File(outputDir.path, outputZiplineFilePath)
 
-    val quickJs = QuickJs.create()
-    quickJs.use {
-      var bytecode = quickJs.compile(jsFile.readText(), jsFile.name)
+    val jsEngine = JsEngine.create()
+    jsEngine.use {
+      var bytecode = jsEngine.compile(jsFile.readText(), jsFile.name)
 
       if (jsSourceMapFile.exists()) {
         // Rewrite the bytecode with source line numbers.
@@ -133,7 +133,7 @@ internal class ZiplineCompiler(
         hashingSink.hash
       }
 
-      val dependencies = collectDependencies(quickJs, bytecode)
+      val dependencies = collectDependencies(jsEngine, bytecode)
 
       return "$MODULE_PATH_PREFIX${jsFile.name}" to ZiplineManifest.Module(
         url = outputZiplineFilePath,
@@ -166,9 +166,9 @@ internal class ZiplineCompiler(
   private val manifestFileName = app.cash.zipline.loader.internal.MANIFEST_FILE_NAME
 
   @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") // Access :zipline internals.
-  private fun collectDependencies(quickJs: QuickJs, bytecode: ByteArray): List<String> {
-    app.cash.zipline.internal.collectModuleDependencies(quickJs)
-    quickJs.execute(bytecode)
-    return app.cash.zipline.internal.getModuleDependencies(quickJs)
+  private fun collectDependencies(jsEngine: JsEngine, bytecode: ByteArray): List<String> {
+    app.cash.zipline.internal.collectModuleDependencies(jsEngine)
+    jsEngine.execute(bytecode)
+    return app.cash.zipline.internal.getModuleDependencies(jsEngine)
   }
 }

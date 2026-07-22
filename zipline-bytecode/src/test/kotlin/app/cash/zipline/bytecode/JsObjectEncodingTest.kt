@@ -15,7 +15,7 @@
  */
 package app.cash.zipline.bytecode
 
-import app.cash.zipline.QuickJs
+import app.cash.zipline.JsEngine
 import assertk.assertThat
 import assertk.assertions.containsExactly
 import assertk.assertions.isEqualTo
@@ -25,10 +25,10 @@ import org.junit.After
 import org.junit.Test
 
 class JsObjectEncodingTest {
-  private val quickJs = QuickJs.create()
+  private val jsEngine = JsEngine.create()
 
   @After fun tearDown() {
-    quickJs.close()
+    jsEngine.close()
   }
 
   @Test fun decodeAndEncode() {
@@ -212,7 +212,7 @@ class JsObjectEncodingTest {
     fileName: String = "test.js",
   ): JsFunctionBytecode {
     // Use QuickJS to compile a script into bytecode.
-    val bytecode: ByteArray = quickJs.compile(script, fileName)
+    val bytecode: ByteArray = jsEngine.compile(script, fileName)
 
     // Confirm we can decode the bytecode.
     val reader = JsObjectReader(bytecode)
