@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019 Square, Inc.
+ * Copyright (C) 2021 Square, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,14 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef ZIPLINE_HERMES_EXCEPTIONTHROWERS_H
-#define ZIPLINE_HERMES_EXCEPTIONTHROWERS_H
+package app.cash.zipline
 
-#include <jni.h>
-
-class ContextJni;
-
-void throwJavaException(JNIEnv* env, const char* exceptionClass, const char* fmt, ...);
-void throwJsExceptionFmt(JNIEnv* env, const ContextJni* context, const char* fmt, ...);
-
-#endif  // ZIPLINE_HERMES_EXCEPTIONTHROWERS_H
+internal actual fun loadNativeLibrary() {
+  // Combined Hermes + JNI glue library. CMake produces libhermesvmlean.so with
+  // our JNI glue merged in (via zipline_glue static lib linked into hermesvmlean).
+  // No separate libzipline_hermes_jni.so needed. Lean mode excludes JIT/parser.
+  System.loadLibrary("hermesvmlean")
+}

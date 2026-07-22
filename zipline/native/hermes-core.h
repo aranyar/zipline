@@ -1,0 +1,116 @@
+/*
+ * Copyright (C) 2024 Square, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#ifndef HERMES_CORE_H
+#define HERMES_CORE_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+
+#include <hermes/hermes.h>
+
+#include <memory>
+#include <string>
+
+// The core context. Platform layers may inherit from this struct to attach
+// their own per-runtime state (see hermes-ios.cpp); such layers must use
+// HermesCore_initContext/HermesCore_releaseContext instead of
+// createContext/destroyContext so the derived object is allocated and
+// deleted with its own type.
+//
+// TODO: this header currently leaks Hermes C++ implementation details
+// (<hermes/hermes.h>, std::unique_ptr member) into every consumer. If the
+// consumer list grows beyond the two engine glue .cpps, hide the members
+// behind a pimpl or a forward-declared base with a virtual destructor.
+struct HermesCoreContext {
+  std::unique_ptr<facebook::hermes::HermesRuntime> runtime;
+  std::string lastError;
+};
+
+// Initialize/release a caller-allocated context (returns 1 on success).
+int HermesCore_initContext(HermesCoreContext* ctx);
+void HermesCore_releaseContext(HermesCoreContext* ctx);
+
+extern "C" {
+#endif
+
+// Create a new Hermes Context (pass JNIEnv* cast to void* for JNI-based platforms)
+void* HermesCore_createContext(void* jniEnv);
+
+// Destroy a Hermes Context created by HermesCore_createContext
+void HermesCore_destroyContext(void* context);
+
+// Execute pre-compiled bytecode (returns 0 on error)
+int HermesCore_execute(void* context, const uint8_t* bytecode, size_t bytecodeSize, const char* sourceURL, char** errorOut);
+
+// Evaluate JavaScript directly (returns 0 on error).
+// codeSize is the length of code in bytes; pass 0 to use strlen(code).
+// sourceURL is used for error stack traces (pass nullptr for "<eval>").
+int HermesCore_evaluate(void* context, const char* code, size_t codeSize, const char* sourceURL, char** errorOut);
+
+// Get the jsi::Runtime from a context (for iOS wrapper layer)
+void* HermesCore_getRuntime(void* context);
+
+// Compile JavaScript to bytecode (sourceMap is optional, pass nullptr if not needed)
+// On success, allocates *bytecodeOut which caller must delete[]
+int HermesCore_compile(void* context,
+                      const char* source,
+                      const char* filename,
+                      const char* sourceMap,
+                      uint8_t** bytecodeOut,
+                      size_t* bytecodeSizeOut,
+                      char** errorOut);
+
+// Global property access (all return 1 on success, 0 on failure)
+int HermesCore_getGlobalProperty(void* context, const char* name, char** valueOut, char** errorOut);
+int HermesCore_setGlobalProperty(void* context, const char* name, const char* value, char** errorOut);
+int HermesCore_deleteGlobalProperty(void* context, const char* name, char** errorOut);
+
+// Function calls (all return 1 on success, 0 on failure)
+int HermesCore_callGlobalMethod(void* context, const char* objectName, const char* methodName, char** errorOut);
+int HermesCore_callGlobalFunctionWithStringArg(void* context, const char* functionName, const char* arg, char** resultOut, char** errorOut);
+
+// Module system
+// moduleId is the module to require
+// methodName is a dotted path to method on module exports (e.g., "io.clive.wb.services.wbRootMain")
+int HermesCore_callRequireMethod(void* context, const char* moduleId, const char* methodName, char** errorOut);
+
+// Install AMD-style module loader (define/require)
+int HermesCore_installModuleLoader(void* context, char** errorOut);
+
+// Memory management (currently stubs)
+void HermesCore_setMemoryLimit(void* context, int64_t limitBytes);
+void HermesCore_setGcThreshold(void* context, int64_t thresholdBytes);
+void HermesCore_setMaxStackSize(void* context, int64_t maxSizeBytes);
+void HermesCore_gc(void* context);
+
+// Memory usage stats (all return 1 on success, 0 on failure)
+int HermesCore_getMemoryUsage(void* context, int64_t* heapSizeOut, int64_t* allocBytesOut, int64_t* gcCountOut);
+
+// Version string
+const char* HermesCore_getVersion(void);
+
+// Get last error message
+const char* HermesCore_getLastError(void* context);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif // HERMES_CORE_H
