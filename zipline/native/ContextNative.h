@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019 Square, Inc.
+ * Copyright (C) 2024 Square, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,36 +13,37 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef ZIPLINE_HERMES_OUTBOUNDCALLCHANNEL_H
-#define ZIPLINE_HERMES_OUTBOUNDCALLCHANNEL_H
+#ifndef ZIPLINE_CONTEXT_NATIVE_H
+#define ZIPLINE_CONTEXT_NATIVE_H
 
 #include "ContextBase.h"
 
-#include <jsi/jsi.h>
+#include <hermes/hermes.h>
+
 #include <string>
+#include <vector>
 
 namespace facebook {
 namespace jsi {
-class Object;
 class Runtime;
-class Value;
 }
 }  // namespace facebook
 
-class OutboundCallChannel {
+class ContextNative : public ContextBase {
  public:
-  OutboundCallChannel(ContextBase* context, std::string name);
-  virtual ~OutboundCallChannel();
+  explicit ContextNative();
+  ~ContextNative() override;
 
-  void attachToJavascript(facebook::jsi::Runtime& runtime,
-                         facebook::jsi::Object& jsObject);
+  facebook::jsi::Runtime& getRuntime() override;
+  facebook::jsi::String toJsString(const std::string& str) override;
+  std::string toCppString(const facebook::jsi::String& str) override;
+  void throwJsException(const std::string& message) override;
 
-  virtual std::string call(const std::string& callJson) = 0;
-  virtual bool disconnect(const std::string& instanceName) = 0;
+  void installGcFunction();
 
- protected:
-  ContextBase* context_;
-  std::string name_;
+ private:
+  std::unique_ptr<facebook::hermes::HermesRuntime> hermesRuntime_;
+  facebook::jsi::Runtime* runtime_;
 };
 
-#endif  // ZIPLINE_HERMES_OUTBOUNDCALLCHANNEL_H
+#endif  // ZIPLINE_CONTEXT_NATIVE_H

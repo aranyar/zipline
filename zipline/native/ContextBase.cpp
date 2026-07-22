@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019 Square, Inc.
+ * Copyright (C) 2024 Square, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,14 +13,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef ZIPLINE_HERMES_EXCEPTIONTHROWERS_H
-#define ZIPLINE_HERMES_EXCEPTIONTHROWERS_H
+#include "ContextBase.h"
+#include "InboundCallChannel.h"
+#include "OutboundCallChannel.h"
 
-#include <jni.h>
+ContextBase::~ContextBase() {
+  for (auto* ch : callChannels) delete ch;
+  for (auto* ch : outboundChannels) delete ch;
+}
 
-class ContextJni;
-
-void throwJavaException(JNIEnv* env, const char* exceptionClass, const char* fmt, ...);
-void throwJsExceptionFmt(JNIEnv* env, const ContextJni* context, const char* fmt, ...);
-
-#endif  // ZIPLINE_HERMES_EXCEPTIONTHROWERS_H
+void ContextBase::throwJsError(facebook::jsi::JSError& error) {
+  throwJsException(error.getMessage());
+}

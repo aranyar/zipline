@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019 Square, Inc.
+ * Copyright (C) 2024 Square, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,12 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef ZIPLINE_HERMES_INBOUNDCALLCHANNEL_H
-#define ZIPLINE_HERMES_INBOUNDCALLCHANNEL_H
-
-#include "ContextBase.h"
+#ifndef ZIPLINE_CALL_CHANNEL_H
+#define ZIPLINE_CALL_CHANNEL_H
 
 #include <jsi/jsi.h>
+#include <memory>
 #include <string>
 
 namespace facebook {
@@ -30,12 +29,24 @@ class Runtime;
 class InboundCallChannel {
  public:
   explicit InboundCallChannel(std::string name);
+  virtual ~InboundCallChannel() = default;
 
-  std::string call(ContextBase* context, const std::string& callJson) const;
-  bool disconnect(ContextBase* context, const std::string& instanceName) const;
+  virtual std::string call(facebook::jsi::Runtime& runtime, const std::string& callJson) = 0;
+  virtual bool disconnect(facebook::jsi::Runtime& runtime, const std::string& instanceName) = 0;
 
- private:
+  const std::string& name() const { return name_; }
+
+ protected:
   std::string name_;
 };
 
-#endif  // ZIPLINE_HERMES_INBOUNDCALLCHANNEL_H
+class OutboundCallChannel {
+ public:
+  OutboundCallChannel() = default;
+  virtual ~OutboundCallChannel() = default;
+
+  virtual void attachToJavascript(facebook::jsi::Runtime& runtime,
+                                   facebook::jsi::Object& jsObject) = 0;
+};
+
+#endif  // ZIPLINE_CALL_CHANNEL_H
