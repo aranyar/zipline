@@ -6,12 +6,14 @@
 # Gradle
 .gradle
 build/
+zipline/native/hermes-jni-build/build*
 local.properties
 reports
 jacoco.exec
 .externalNativeBuild
 .cxx
 .kotlin
+zipline/src/androidMain/resources/
 
 # iOS
 *.pbxuser
