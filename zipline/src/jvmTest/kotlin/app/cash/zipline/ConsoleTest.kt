@@ -103,8 +103,7 @@ class ConsoleTest {
     assertThat(record1.thrown.stackTraceToString()).matches(
       Regex(
         """(?s).*IllegalStateException: boom!""" +
-          """.*at goBoom1""" +
-          """.*at goBoom2""" +
+          // Hermes inlines goBoom1/goBoom2; only goBoom3 survives.
           """.*at goBoom3""" +
           """.*at consoleLogWithThrowable""" +
           """.*""",

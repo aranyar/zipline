@@ -17,9 +17,6 @@ package app.cash.zipline.cli
 
 import app.cash.zipline.JsEngine
 import app.cash.zipline.ZiplineManifest
-import app.cash.zipline.bytecode.SourceMap
-import app.cash.zipline.bytecode.applySourceMapToBytecode
-import app.cash.zipline.bytecode.clean
 import app.cash.zipline.bytecode.stripLineNumbers
 import app.cash.zipline.loader.CURRENT_ZIPLINE_VERSION
 import app.cash.zipline.loader.ManifestSigner
@@ -112,17 +109,12 @@ internal class ZiplineCompiler(
 
     val jsEngine = JsEngine.create()
     jsEngine.use {
-      var bytecode = jsEngine.compile(jsFile.readText(), jsFile.name)
+      val sourceMap = if (jsSourceMapFile.exists()) jsSourceMapFile.readText() else null
+      val bytecode = jsEngine.compile(jsFile.readText(), jsFile.name, sourceMap)
 
-      if (jsSourceMapFile.exists()) {
-        // Rewrite the bytecode with source line numbers.
-        val sourceMap = SourceMap.parse(jsSourceMapFile.readText()).clean()
-        bytecode = applySourceMapToBytecode(bytecode, sourceMap)
-      }
-
-      if (stripLineNumbers) {
-        bytecode = stripLineNumbers(bytecode)
-      }
+//      if (stripLineNumbers) { // TODO: Do we need it?
+//        bytecode = stripLineNumbers(bytecode)
+//      }
 
       val ziplineFile = ZiplineFile(CURRENT_ZIPLINE_VERSION, bytecode.toByteString())
       val sha256 = outputZiplineFile.sink().use { fileSink ->

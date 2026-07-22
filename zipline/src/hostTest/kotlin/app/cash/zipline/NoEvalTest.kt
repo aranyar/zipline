@@ -42,6 +42,7 @@ class NoEvalTest {
       // eval in JS code doesn't
       jsEngine.evaluate("eval('3+3')", "shouldFail.js")
     }
-    assertThat(e.message!!).startsWith("eval is not supported")
+    // Hermes reports direct eval as a parse failure.
+    assertThat(e.message!!).startsWith("Parsing source code unsupported")
   }
 }

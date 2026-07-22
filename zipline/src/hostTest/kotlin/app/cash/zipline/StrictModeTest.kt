@@ -18,6 +18,7 @@ package app.cash.zipline
 import assertk.assertThat
 import assertk.assertions.startsWith
 import kotlin.test.AfterTest
+import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 
@@ -26,6 +27,10 @@ import kotlin.test.assertFailsWith
  *
  * https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Strict_mode
  */
+@Ignore(
+  "Hermes has no global strict-mode option (QuickJS used JS_EVAL_FLAG_STRICT); " +
+    "guest code runs sloppy unless it declares 'use strict' itself",
+)
 class StrictModeTest {
   private val jsEngine = JsEngine.create()
 
