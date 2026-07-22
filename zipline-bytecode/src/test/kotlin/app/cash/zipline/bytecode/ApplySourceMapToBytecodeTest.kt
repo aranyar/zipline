@@ -15,7 +15,7 @@
  */
 package app.cash.zipline.bytecode
 
-import app.cash.zipline.QuickJs
+import app.cash.zipline.JsEngine
 import assertk.assertThat
 import assertk.assertions.isEqualTo
 import assertk.assertions.startsWith
@@ -25,7 +25,7 @@ import org.junit.Before
 import org.junit.Test
 
 class ApplySourceMapToBytecodeTest {
-  private val quickJs = QuickJs.create()
+  private val jsEngine = JsEngine.create()
 
   private val emptySourceMap = SourceMap.parse(
     """
@@ -43,11 +43,11 @@ class ApplySourceMapToBytecodeTest {
   @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") // Access :zipline internals.
   fun setUp() {
     // Configure QuickJS to support module loading.
-    app.cash.zipline.internal.initModuleLoader(quickJs)
+    app.cash.zipline.internal.initModuleLoader(jsEngine)
   }
 
   @After fun tearDown() {
-    quickJs.close()
+    jsEngine.close()
   }
 
   @Test fun happyPath() {
@@ -114,15 +114,15 @@ class ApplySourceMapToBytecodeTest {
       """.trimIndent()
 
     // Use QuickJS to compile a script into bytecode.
-    val bytecode = quickJs.compile(js, "demo.js")
+    val bytecode = jsEngine.compile(js, "demo.js")
     val updatedBytecode = applySourceMapToBytecode(bytecode, SourceMap.parse(sourceMap))
     loadJsModule("demo", updatedBytecode)
     val exception = assertFailsWith<Exception> {
-      quickJs.evaluate("require('demo').sayHello()")
+      jsEngine.evaluate("require('demo').sayHello()")
     }
     assertThat(exception.stackTraceToString()).startsWith(
       """
-      |app.cash.zipline.QuickJsException: boom!
+      |app.cash.zipline.JsException: boom!
       |	at JavaScript.goBoom1(throwException.kt:12:12)
       |	at JavaScript.goBoom2(throwException.kt:9:12)
       |	at JavaScript.goBoom3(throwException.kt:6:12)
@@ -167,15 +167,15 @@ class ApplySourceMapToBytecodeTest {
     val sourceMap = SourceMap.parse(originalSourceMap).clean()
 
     // Use QuickJS to compile a script into bytecode.
-    val bytecode = quickJs.compile(js, "goBoom.js")
+    val bytecode = jsEngine.compile(js, "goBoom.js")
     val updatedBytecode = applySourceMapToBytecode(bytecode, sourceMap)
     loadJsModule("goBoom", updatedBytecode)
     val exception = assertFailsWith<Exception> {
-      quickJs.evaluate("require('goBoom').app.cash.zipline.testing.goBoom(3)")
+      jsEngine.evaluate("require('goBoom').app.cash.zipline.testing.goBoom(3)")
     }
     assertThat(exception.stackTraceToString().replace("\t", "  ")).startsWith(
       """
-      |app.cash.zipline.QuickJsException: boom
+      |app.cash.zipline.JsException: boom
       |  at JavaScript.<anonymous>(app/cash/zipline/testing/goBoom.kt:4:48)
       |  at JavaScript.<anonymous>(app/cash/zipline/testing/goBoom.kt:10:48)
       |  at JavaScript.<anonymous>(app/cash/zipline/testing/goBoom.kt:10:48)
@@ -194,7 +194,7 @@ class ApplySourceMapToBytecodeTest {
       """.trimMargin()
 
     // Just confirm the empty function can be transformed successfully.
-    val bytecode = quickJs.compile(js, "demo.js")
+    val bytecode = jsEngine.compile(js, "demo.js")
     applySourceMapToBytecode(bytecode, emptySourceMap)
   }
 
@@ -216,14 +216,14 @@ class ApplySourceMapToBytecodeTest {
       |
       """.trimMargin()
 
-    val bytecode = quickJs.compile(js, "demo.js")
+    val bytecode = jsEngine.compile(js, "demo.js")
     val bytecodeWithSourceMap = applySourceMapToBytecode(bytecode, emptySourceMap)
-    quickJs.execute(bytecodeWithSourceMap)
-    assertThat(quickJs.evaluate("doubleToDisplayString('1000.0')")).isEqualTo("1000.0")
+    jsEngine.execute(bytecodeWithSourceMap)
+    assertThat(jsEngine.evaluate("doubleToDisplayString('1000.0')")).isEqualTo("1000.0")
   }
 
   @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") // Access :zipline internals.
   private fun loadJsModule(id: String, bytecode: ByteArray) {
-    app.cash.zipline.internal.loadJsModule(quickJs, id, bytecode)
+    app.cash.zipline.internal.loadJsModule(jsEngine, id, bytecode)
   }
 }

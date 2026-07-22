@@ -43,7 +43,7 @@ class LeakedServicesTest {
   }
 
   @Test fun jvmLeaksService() = runTest(dispatcher) {
-    zipline.quickJs.evaluate("testing.app.cash.zipline.testing.prepareJsBridges()")
+    zipline.jsEngine.evaluate("testing.app.cash.zipline.testing.prepareJsBridges()")
     val name = "helloService"
     val leakWatcher = LeakWatcher<EchoService> {
       zipline.take(name) // Deliberately not closed for testing.
@@ -61,8 +61,8 @@ class LeakedServicesTest {
 
     val name = "supService"
     zipline.bind<EchoService>(name, supService)
-    zipline.quickJs.evaluate("testing.app.cash.zipline.testing.allocateAndLeakService()")
-    zipline.quickJs.evaluate("testing.app.cash.zipline.testing.triggerLeakDetection()")
+    zipline.jsEngine.evaluate("testing.app.cash.zipline.testing.allocateAndLeakService()")
+    zipline.jsEngine.evaluate("testing.app.cash.zipline.testing.triggerLeakDetection()")
     assertThat(eventListener.take()).isEqualTo("bindService $name")
     assertThat(eventListener.take()).isEqualTo("serviceLeaked $name")
   }

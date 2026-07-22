@@ -43,7 +43,7 @@ class ExceptionsTest {
   }
 
   @Test fun hostCallGuestServiceThatThrows(): Unit = runBlocking(dispatcher) {
-    zipline.quickJs.evaluate("testing.app.cash.zipline.testing.prepareThrowingJsBridges()")
+    zipline.jsEngine.evaluate("testing.app.cash.zipline.testing.prepareThrowingJsBridges()")
 
     val service = zipline.take<EchoService>("throwingService")
 
@@ -64,8 +64,8 @@ class ExceptionsTest {
   @Test fun guestCallsHostServiceThatThrows(): Unit = runBlocking(dispatcher) {
     zipline.bind<EchoService>("throwingService", HostThrowingEchoService())
 
-    val e = assertFailsWith<QuickJsException> {
-      zipline.quickJs.evaluate("testing.app.cash.zipline.testing.callThrowingService('homie')")
+    val e = assertFailsWith<JsException> {
+      zipline.jsEngine.evaluate("testing.app.cash.zipline.testing.callThrowingService('homie')")
     }
     assertThat(e.stackTraceToString()).matches(
       Regex(
@@ -82,7 +82,7 @@ class ExceptionsTest {
   @Test
   fun hostCallsGuestCallsHostServiceThatThrows(): Unit = runBlocking(dispatcher) {
     zipline.bind<EchoService>("throwingService", HostThrowingEchoService())
-    zipline.quickJs.evaluate("testing.app.cash.zipline.testing.prepareDelegatingService()")
+    zipline.jsEngine.evaluate("testing.app.cash.zipline.testing.prepareDelegatingService()")
 
     val service = zipline.take<EchoService>("delegatingService")
 

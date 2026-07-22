@@ -21,40 +21,40 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class TuningApisTest {
-  private val quickjs = QuickJs.create()
+  private val js = JsEngine.create()
 
   @AfterTest fun tearDown() {
-    quickjs.close()
+    js.close()
   }
 
   @Test fun defaults() {
     // TODO remove this test once jniMain and nativeMain share initial value config in hostMain.
-    assertEquals(-1, quickjs.memoryLimit)
-    assertEquals(256L * 1024L, quickjs.gcThreshold)
-    assertEquals(512L * 1024L, quickjs.maxStackSize)
+    assertEquals(-1, js.memoryLimit)
+    assertEquals(256L * 1024L, js.gcThreshold)
+    assertEquals(512L * 1024L, js.maxStackSize)
   }
 
   @Test fun setMemoryLimit() {
     val value = 1024L * 1024L + 1L
-    quickjs.memoryLimit = value
-    assertEquals(value, quickjs.memoryLimit)
-    assertEquals(value, quickjs.memoryUsage.memoryAllocatedLimit)
+    js.memoryLimit = value
+    assertEquals(value, js.memoryLimit)
+    assertEquals(value, js.memoryUsage.memoryAllocatedLimit)
   }
 
   @Test fun setGcThreshold() {
     val value = 1024L * 1024L + 2L
-    quickjs.gcThreshold = value
-    assertEquals(value, quickjs.gcThreshold)
+    js.gcThreshold = value
+    assertEquals(value, js.gcThreshold)
   }
 
   @Test fun setMaxStackSize() {
     val value = 1024L * 1024L + 3L
-    quickjs.maxStackSize = value
-    assertEquals(value, quickjs.maxStackSize)
+    js.maxStackSize = value
+    assertEquals(value, js.maxStackSize)
   }
 
   @Test fun initialMemoryUsage() {
-    val usage = quickjs.memoryUsage
+    val usage = js.memoryUsage
     assertTrue(usage.memoryAllocatedCount > 0L, usage.toString())
     assertTrue(usage.memoryAllocatedSize > 0L, usage.toString())
     assertTrue(usage.memoryAllocatedLimit != 0L, usage.toString())
@@ -64,7 +64,7 @@ class TuningApisTest {
 
   @Test fun definePropertyIncreasesPropertiesCount() {
     val diff = diffMemoryUsage {
-      quickjs.evaluate(
+      js.evaluate(
         """
         globalThis.hello = 'hello';
         """,
@@ -76,7 +76,7 @@ class TuningApisTest {
 
   @Test fun defineFunctionIncreasesFunctionsCount() {
     val diff = diffMemoryUsage {
-      quickjs.evaluate(
+      js.evaluate(
         """
         globalThis.hypotenuse = function(a, b) {
           return Math.sqrt((a * a) + (b * b));
@@ -93,7 +93,7 @@ class TuningApisTest {
 
   @Test fun defineFastArrayIncreasesFastArraysCount() {
     val diff = diffMemoryUsage {
-      quickjs.evaluate(
+      js.evaluate(
         """
         globalThis.buffer = new Uint8Array(1024 * 1024);
         """,
@@ -106,9 +106,9 @@ class TuningApisTest {
   }
 
   private fun diffMemoryUsage(block: () -> Unit): MemoryUsage {
-    val before = quickjs.memoryUsage
+    val before = js.memoryUsage
     block()
-    val after = quickjs.memoryUsage
+    val after = js.memoryUsage
 
     return MemoryUsage(
       memoryAllocatedCount = after.memoryAllocatedCount - before.memoryAllocatedCount,

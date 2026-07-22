@@ -16,7 +16,7 @@
 
 package app.cash.zipline.cli
 
-import app.cash.zipline.QuickJs
+import app.cash.zipline.JsEngine
 import app.cash.zipline.ZiplineManifest
 import app.cash.zipline.loader.CURRENT_ZIPLINE_VERSION
 import app.cash.zipline.loader.ZiplineFile
@@ -34,34 +34,34 @@ import org.junit.Before
 import org.junit.Test
 
 class ZiplineCompilerTest {
-  private val quickJs = QuickJs.create()
+  private val jsEngine = JsEngine.create()
 
   @Before
   @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") // Access :zipline internals.
   fun setUp() {
     // Configure QuickJS to support module loading.
-    app.cash.zipline.internal.initModuleLoader(quickJs)
+    app.cash.zipline.internal.initModuleLoader(jsEngine)
   }
 
   @After
   fun after() {
-    quickJs.close()
+    jsEngine.close()
   }
 
   @Test
   fun `write to and read from zipline`() {
     val moduleNameToFile = compile("src/test/resources/happyPath/", true)
     for ((moduleName, ziplineFile) in moduleNameToFile) {
-      loadJsModule(quickJs, moduleName, ziplineFile.quickjsBytecode.toByteArray())
+      loadJsModule(jsEngine, moduleName, ziplineFile.quickjsBytecode.toByteArray())
     }
 
     val exception = assertFailsWith<Exception> {
-      quickJs.evaluate("require('./hello.js').sayHello()", "test.js")
+      jsEngine.evaluate("require('./hello.js').sayHello()", "test.js")
     }
     // .kt files in the stacktrace means that the sourcemap was applied correctly.
     assertThat(exception.stackTraceToString()).startsWith(
       """
-      |app.cash.zipline.QuickJsException: boom!
+      |app.cash.zipline.JsException: boom!
       |	at JavaScript.goBoom1(throwException.kt)
       |	at JavaScript.goBoom2(throwException.kt:9)
       |	at JavaScript.goBoom3(throwException.kt:6)
@@ -76,16 +76,16 @@ class ZiplineCompilerTest {
   fun `no source map`() {
     val moduleNameToFile = compile("src/test/resources/happyPathNoSourceMap/", false)
     for ((_, ziplineFile) in moduleNameToFile) {
-      quickJs.execute(ziplineFile.quickjsBytecode.toByteArray())
+      jsEngine.execute(ziplineFile.quickjsBytecode.toByteArray())
     }
-    assertEquals("Hello, guy!", quickJs.evaluate("greet('guy')", "test.js"))
+    assertEquals("Hello, guy!", jsEngine.evaluate("greet('guy')", "test.js"))
   }
 
   @Test
   fun `js with imports and exports`() {
     val moduleNameToFile = compile("src/test/resources/jsWithImportsExports/", false)
     for ((name, ziplineFile) in moduleNameToFile) {
-      loadJsModule(quickJs, name, ziplineFile.quickjsBytecode.toByteArray())
+      loadJsModule(jsEngine, name, ziplineFile.quickjsBytecode.toByteArray())
     }
   }
 
@@ -109,20 +109,20 @@ class ZiplineCompilerTest {
       removedFiles = File("$rootProject/removed").listFiles()!!.asList(),
     )
     for ((_, ziplineFile) in moduleNameToFile) {
-      quickJs.execute(ziplineFile.quickjsBytecode.toByteArray())
+      jsEngine.execute(ziplineFile.quickjsBytecode.toByteArray())
     }
 
     // Jello file was removed
     assertFalse(File("$outputDir/jello.zipline").exists())
     // Bello file was added
-    quickJs.execute(readZiplineFile(File("$outputDir/bello.zipline")).quickjsBytecode.toByteArray())
-    assertEquals("Bello!", quickJs.evaluate("bello()", "test.js"))
+    jsEngine.execute(readZiplineFile(File("$outputDir/bello.zipline")).quickjsBytecode.toByteArray())
+    assertEquals("Bello!", jsEngine.evaluate("bello()", "test.js"))
     // Hello file was replaced with bonjour
-    quickJs.execute(readZiplineFile(File("$outputDir/hello.zipline")).quickjsBytecode.toByteArray())
-    assertEquals("Bonjour, guy!", quickJs.evaluate("greet('guy')", "test.js"))
+    jsEngine.execute(readZiplineFile(File("$outputDir/hello.zipline")).quickjsBytecode.toByteArray())
+    assertEquals("Bonjour, guy!", jsEngine.evaluate("greet('guy')", "test.js"))
     // Yello file remains untouched
-    quickJs.execute(readZiplineFile(File("$outputDir/yello.zipline")).quickjsBytecode.toByteArray())
-    assertEquals("HELLO", quickJs.evaluate("greet()", "test.js"))
+    jsEngine.execute(readZiplineFile(File("$outputDir/yello.zipline")).quickjsBytecode.toByteArray())
+    assertEquals("HELLO", jsEngine.evaluate("greet()", "test.js"))
   }
 
   private fun readZiplineFile(file: File): ZiplineFile {
@@ -225,7 +225,7 @@ class ZiplineCompilerTest {
   }
 
   @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER") // Access :zipline internals.
-  private fun loadJsModule(quickJs: QuickJs, id: String, bytecode: ByteArray) {
-    return app.cash.zipline.internal.loadJsModule(quickJs, id, bytecode)
+  private fun loadJsModule(jsEngine: JsEngine, id: String, bytecode: ByteArray) {
+    return app.cash.zipline.internal.loadJsModule(jsEngine, id, bytecode)
   }
 }

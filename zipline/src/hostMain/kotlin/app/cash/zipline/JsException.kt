@@ -15,11 +15,4 @@
  */
 package app.cash.zipline
 
-actual class QuickJsException(
-  message: String,
-) : RuntimeException(message) {
-  constructor(
-    message: String,
-    stackTrace: String,
-  ) : this("${message.trimEnd()}\n${stackTrace.trimEnd()}")
-}
+expect class JsException : RuntimeException
