@@ -53,7 +53,6 @@ class OutboundCallChannelJni : public OutboundCallChannel {
       OutboundCallChannel* channel);
 
   ContextJni* contextJni_;
-  JNIEnv* env_;
   jobject javaThis_;
   jclass callChannelClass_;
   jmethodID callMethod_;

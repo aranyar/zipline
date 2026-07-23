@@ -84,12 +84,8 @@ class ContextJni : public ContextBase {
                      jstring sourceMap);
 
   // ----- Configuration.
-  void setInterruptHandler(JNIEnv* env, jobject interruptHandler);
   jobject memoryUsage(JNIEnv* env);
-  void setMemoryLimit(JNIEnv* env, jlong limit);
-  void setGcThreshold(JNIEnv* env, jlong gcThreshold);
   void gc(JNIEnv* env);
-  void setMaxStackSize(JNIEnv* env, jlong stackSize);
 
   // ----- Bridged call channels.
   InboundCallChannel* getInboundCallChannel(JNIEnv* env, jstring name);
@@ -142,9 +138,6 @@ class ContextJni : public ContextBase {
   jmethodID stringConstructor;
   jmethodID memoryUsageConstructor;
   jmethodID jsExceptionConstructor;
-  jclass interruptHandlerClass;
-  jmethodID interruptHandlerPoll;
-  jobject interruptHandler;
 
   // RDMA Changes support
   // The class holding cached JNI references for RDMA bridging.

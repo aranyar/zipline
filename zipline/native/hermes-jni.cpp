@@ -130,18 +130,6 @@ Java_app_cash_zipline_JsEngine_compile(JNIEnv* env, jobject /*thiz*/,
   return ctx->compile(env, source, filename, sourceMap);
 }
 
-extern "C" JNIEXPORT void JNICALL
-Java_app_cash_zipline_JsEngine_setInterruptHandler(JNIEnv* env, jobject /*thiz*/,
-                                                 jlong _context, jobject handler) {
-  ContextJni* ctx = toContext(_context);
-  if (!ctx) {
-    throwJavaException(env, "java/lang/IllegalStateException",
-                       "JsEngine instance was closed");
-    return;
-  }
-  ctx->setInterruptHandler(env, handler);
-}
-
 extern "C" JNIEXPORT jobject JNICALL
 Java_app_cash_zipline_JsEngine_memoryUsage(JNIEnv* env, jobject /*thiz*/,
                                         jlong _context) {
@@ -155,30 +143,6 @@ Java_app_cash_zipline_JsEngine_memoryUsage(JNIEnv* env, jobject /*thiz*/,
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_app_cash_zipline_JsEngine_setMemoryLimit(JNIEnv* env, jobject /*thiz*/,
-                                            jlong _context, jlong limit) {
-  ContextJni* ctx = toContext(_context);
-  if (!ctx) {
-    throwJavaException(env, "java/lang/IllegalStateException",
-                       "JsEngine instance was closed");
-    return;
-  }
-  ctx->setMemoryLimit(env, limit);
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_app_cash_zipline_JsEngine_setGcThreshold(JNIEnv* env, jobject /*thiz*/,
-                                            jlong _context, jlong threshold) {
-  ContextJni* ctx = toContext(_context);
-  if (!ctx) {
-    throwJavaException(env, "java/lang/IllegalStateException",
-                       "JsEngine instance was closed");
-    return;
-  }
-  ctx->setGcThreshold(env, threshold);
-}
-
-extern "C" JNIEXPORT void JNICALL
 Java_app_cash_zipline_JsEngine_gc(JNIEnv* env, jobject /*thiz*/, jlong _context) {
   ContextJni* ctx = toContext(_context);
   if (!ctx) {
@@ -187,18 +151,6 @@ Java_app_cash_zipline_JsEngine_gc(JNIEnv* env, jobject /*thiz*/, jlong _context)
     return;
   }
   ctx->gc(env);
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_app_cash_zipline_JsEngine_setMaxStackSize(JNIEnv* env, jobject /*thiz*/,
-                                             jlong _context, jlong stackSize) {
-  ContextJni* ctx = toContext(_context);
-  if (!ctx) {
-    throwJavaException(env, "java/lang/IllegalStateException",
-                       "JsEngine instance was closed");
-    return;
-  }
-  ctx->setMaxStackSize(env, stackSize);
 }
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -477,6 +429,11 @@ Java_app_cash_zipline_JsEngine_installModuleLoader(JNIEnv* env, jobject /*thiz*/
         } else if (args[count - 2].isString()) {
           modId = args[count - 2].asString(runtime).utf8(runtime);
         }
+      }
+
+      // define(id, deps, factory): the id is the leading string argument.
+      if (modId.empty() && count >= 1 && args[0].isString()) {
+        modId = args[0].asString(runtime).utf8(runtime);
       }
 
       if (modId.empty()) {

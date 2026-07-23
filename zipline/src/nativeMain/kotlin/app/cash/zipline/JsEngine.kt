@@ -125,22 +125,19 @@ actual class JsEngine private constructor(
   actual var memoryLimit: Long
     get() = throw UnsupportedOperationException()
     set(value) {
-      checkNotClosed()
-      HermesContext_setMemoryLimit(contextPointer, value)
+      throw UnsupportedOperationException("memoryLimit is not supported by the Hermes engine")
     }
 
   actual var gcThreshold: Long
     get() = throw UnsupportedOperationException()
     set(value) {
-      checkNotClosed()
-      HermesContext_setGcThreshold(contextPointer, value)
+      throw UnsupportedOperationException("gcThreshold is not supported by the Hermes engine")
     }
 
   actual var maxStackSize: Long
     get() = throw UnsupportedOperationException()
     set(value) {
-      checkNotClosed()
-      HermesContext_setMaxStackSize(contextPointer, value)
+      throw UnsupportedOperationException("maxStackSize is not supported by the Hermes engine")
     }
 
   actual fun evaluate(script: String, fileName: String): Any? {
