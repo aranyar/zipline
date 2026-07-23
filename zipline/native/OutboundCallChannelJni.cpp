@@ -19,6 +19,8 @@
 #include <jni.h>
 #include <jsi/jsi.h>
 
+#include <stdexcept>
+
 #include "ContextBase.h"
 #include "ContextJni.h"
 
@@ -28,7 +30,6 @@ OutboundCallChannelJni::OutboundCallChannelJni(ContextBase* context, JNIEnv* env
                                                jobject callChannel, const jsi::Object& jsObject)
     : OutboundCallChannel(context, std::move(name)),
       contextJni_(static_cast<ContextJni*>(context)),
-      env_(env),
       javaThis_(env->NewGlobalRef(callChannel)),
       callChannelClass_(static_cast<jclass>(env->NewGlobalRef(
           env->FindClass("app/cash/zipline/internal/bridge/CallChannel")))),
@@ -58,35 +59,47 @@ OutboundCallChannelJni::OutboundCallChannelJni(ContextBase* context, JNIEnv* env
 }
 
 OutboundCallChannelJni::~OutboundCallChannelJni() {
-  env_->DeleteGlobalRef(javaThis_);
-  env_->DeleteGlobalRef(callChannelClass_);
+  // JNIEnv is thread-local, so we must fetch one for the current thread
+  // rather than reuse the (possibly foreign-thread) construction-time env.
+  JNIEnv* env = contextJni_->getEnv();
+  if (!env) return;
+  env->DeleteGlobalRef(javaThis_);
+  env->DeleteGlobalRef(callChannelClass_);
 }
 
 std::string OutboundCallChannelJni::call(const std::string& callJson) {
-  jstring javaArg = zipline::utf8ToJniString(env_, callJson);
+  JNIEnv* env = contextJni_->getEnv();
+  if (!env) {
+    throw std::runtime_error("OutboundCallChannel.call: no JNIEnv for current thread");
+  }
+  jstring javaArg = zipline::utf8ToJniString(env, callJson);
   jstring javaResult = static_cast<jstring>(
-      env_->CallObjectMethod(javaThis_, callMethod_, javaArg));
-  env_->DeleteLocalRef(javaArg);
+      env->CallObjectMethod(javaThis_, callMethod_, javaArg));
+  env->DeleteLocalRef(javaArg);
 
-  if (env_->ExceptionCheck()) {
+  if (env->ExceptionCheck()) {
     // The Kotlin endpoint threw: stash the throwable and raise it as a JS
     // error so it propagates through JS and is re-thrown verbatim on the
     // outer JNI boundary (instead of feeding JS an empty result string).
-    contextJni_->throwJavaExceptionFromJs(env_);
+    contextJni_->throwJavaExceptionFromJs(env);
   }
 
-  std::string result = zipline::jniStringToUtf8(env_, javaResult);
-  env_->DeleteLocalRef(javaResult);
+  std::string result = zipline::jniStringToUtf8(env, javaResult);
+  env->DeleteLocalRef(javaResult);
   return result;
 }
 
 bool OutboundCallChannelJni::disconnect(const std::string& instanceName) {
-  jstring javaArg = zipline::utf8ToJniString(env_, instanceName);
-  jboolean javaResult = env_->CallBooleanMethod(javaThis_, disconnectMethod_, javaArg);
-  env_->DeleteLocalRef(javaArg);
+  JNIEnv* env = contextJni_->getEnv();
+  if (!env) {
+    throw std::runtime_error("OutboundCallChannel.disconnect: no JNIEnv for current thread");
+  }
+  jstring javaArg = zipline::utf8ToJniString(env, instanceName);
+  jboolean javaResult = env->CallBooleanMethod(javaThis_, disconnectMethod_, javaArg);
+  env->DeleteLocalRef(javaArg);
 
-  if (env_->ExceptionCheck()) {
-    contextJni_->throwJavaExceptionFromJs(env_);
+  if (env->ExceptionCheck()) {
+    contextJni_->throwJavaExceptionFromJs(env);
   }
   return javaResult != JNI_FALSE;
 }

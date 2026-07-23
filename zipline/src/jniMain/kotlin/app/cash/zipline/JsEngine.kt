@@ -48,14 +48,6 @@ actual class JsEngine private constructor(
         throw OutOfMemoryError("Cannot create JsEngine instance")
       }
       return JsEngine(ctx)
-        .apply {
-          // Default config that roughly mirrors the previous QuickJS defaults.
-          // See Context.cpp constructor.
-          // TODO extract this somewhere common to share with nativeMain/
-          memoryLimit = -1L
-          gcThreshold = 256L * 1024L
-          maxStackSize = 512L * 1024L
-        }
     }
 
     @JvmStatic
@@ -66,15 +58,14 @@ actual class JsEngine private constructor(
   }
 
   /**
-   * The interrupt handler is polled frequently during code execution.
-   *
-   * Using any interrupt handler may have a significant performance cost. Use a null handler for
-   * best performance.
+   * Hermes has no per-instruction interrupt hook; its wall-clock
+   * watchTimeLimit/asyncTriggerTimeout mechanism is not wired up yet.
+   * Fail loudly instead of silently dropping the handler.
    */
-  actual var interruptHandler: InterruptHandler? = null
+  actual var interruptHandler: InterruptHandler?
+    get() = throw UnsupportedOperationException()
     set(value) {
-      field = value
-      setInterruptHandler(context, value)
+      throw UnsupportedOperationException("InterruptHandler is not supported by the Hermes engine")
     }
 
   actual var rdmaChangeSink: RdmaChangeSink? = null
@@ -83,25 +74,25 @@ actual class JsEngine private constructor(
   actual val memoryUsage: MemoryUsage
     get() = memoryUsage(context) ?: throw AssertionError()
 
-  /** Default is -1. Use -1 for no limit. */
-  actual var memoryLimit: Long = -1L
+  /** Hermes heap limit is fixed at runtime construction; resizing is unsupported. */
+  actual var memoryLimit: Long
+    get() = throw UnsupportedOperationException()
     set(value) {
-      field = value
-      setMemoryLimit(context, value)
+      throw UnsupportedOperationException("memoryLimit is not supported by the Hermes engine")
     }
 
-  /** Default is 256 KiB. Use -1 to disable automatic GC. */
-  actual var gcThreshold: Long = -1L
+  /** Hermes GC is heap-pressure driven; there is no threshold callback. */
+  actual var gcThreshold: Long
+    get() = throw UnsupportedOperationException()
     set(value) {
-      field = value
-      setGcThreshold(context, value)
+      throw UnsupportedOperationException("gcThreshold is not supported by the Hermes engine")
     }
 
-  /** Default is 512 KiB. Use 0 to disable the maximum stack size check. */
-  actual var maxStackSize: Long = -1L
+  /** Hermes stack overflow is guarded at runtime construction; resizing is unsupported. */
+  actual var maxStackSize: Long
+    get() = throw UnsupportedOperationException()
     set(value) {
-      field = value
-      setMaxStackSize(context, value)
+      throw UnsupportedOperationException("maxStackSize is not supported by the Hermes engine")
     }
 
   /**
@@ -206,12 +197,8 @@ actual class JsEngine private constructor(
   private external fun setOutboundCallChannel(context: Long, name: String, callChannel: CallChannel)
   private external fun execute(context: Long, bytecode: ByteArray, fileName: String): Any?
   private external fun compile(context: Long, sourceCode: String, fileName: String, sourceMap: String?): ByteArray
-  private external fun setInterruptHandler(context: Long, interruptHandler: InterruptHandler?)
   private external fun memoryUsage(context: Long): MemoryUsage?
-  private external fun setMemoryLimit(context: Long, limit: Long)
-  private external fun setGcThreshold(context: Long, gcThreshold: Long)
   private external fun gc(context: Long)
-  private external fun setMaxStackSize(context: Long, stackSize: Long)
   private external fun getGlobalProperty(context: Long, name: String): String?
   private external fun setGlobalProperty(context: Long, name: String, value: String)
   private external fun deleteGlobalProperty(context: Long, name: String)

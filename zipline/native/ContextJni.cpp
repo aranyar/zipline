@@ -16,6 +16,8 @@
 #include "ContextJni.h"
 #include "JniUtf8.h"
 #include "common/intset-builtins.h"
+#include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <stdexcept>
 #ifdef __ANDROID__
@@ -57,6 +59,27 @@ jclass findClassOrNull(JNIEnv* env, const char* name) {
   return static_cast<jclass>(env->NewGlobalRef(cls));
 }
 
+// JS numbers are doubles; casting an out-of-range or non-finite double to an
+// integer type is undefined behavior, so range- and integrality-check first.
+bool tryAsInt32(double d, int32_t& out) {
+  if (!std::isfinite(d) || std::trunc(d) != d ||
+      d < -2147483648.0 || d > 2147483647.0) {
+    return false;
+  }
+  out = static_cast<int32_t>(d);
+  return true;
+}
+
+bool tryAsInt64(double d, int64_t& out) {
+  // Bounds as doubles: only |d| < 2^63 is representable as int64.
+  if (!std::isfinite(d) || std::trunc(d) != d ||
+      d < -9223372036854775808.0 || d >= 9223372036854775808.0) {
+    return false;
+  }
+  out = static_cast<int64_t>(d);
+  return true;
+}
+
 }  // namespace
 
 ContextJni::ContextJni(JNIEnv* env)
@@ -72,9 +95,6 @@ ContextJni::ContextJni(JNIEnv* env)
       stringClass(findClassOrNull(env, "java/lang/String")),
       stringUtf8(static_cast<jstring>(env->NewGlobalRef(env->NewStringUTF("UTF-8")))),
       jsExceptionClass(findClassOrNull(env, "app/cash/zipline/JsException")),
-      interruptHandlerClass(nullptr),
-      interruptHandlerPoll(nullptr),
-      interruptHandler(nullptr),
       memoryUsageConstructor(nullptr),
       pendingJavaException(nullptr) {
   env->GetJavaVM(&javaVm);
@@ -102,9 +122,9 @@ ContextJni::ContextJni(JNIEnv* env)
   jsExceptionConstructor = getInstanceMethod(
       jsExceptionClass, "<init>", "(Ljava/lang/String;Ljava/lang/String;)V");
 
-  // 32 MB initial heap, 3 GB max heap, eval disabled (security), Intl + async
-  // break checks enabled so watchTimeLimit/asyncTriggerTimeout can interrupt
-  // scripts at runtime.
+  // 32 MB initial heap, 3 GB max heap, eval disabled (security).
+  // ES6Proxy is enabled because the Kotlin/JS stdlib uses Reflect.construct
+  // (in kotlin.js.createSubclass), which Hermes only exposes with ES6Proxy.
   gcConfig = hermes_vm::GCConfig()
                 .rebuild()
                 .withInitHeapSize(32u << 20)
@@ -114,6 +134,7 @@ ContextJni::ContextJni(JNIEnv* env)
   runtimeConfig = hermes_vm::RuntimeConfig()
                       .rebuild()
                       .withEnableEval(false)
+                      .withES6Proxy(true)
                       .withGCConfig(gcConfig)
                       .build();
 
@@ -151,8 +172,6 @@ ContextJni::~ContextJni() {
   JNIEnv* env = getEnv();
   if (env) {
     for (auto& kv : globalReferences) env->DeleteGlobalRef(kv.second);
-    if (interruptHandler) env->DeleteGlobalRef(interruptHandler);
-    if (interruptHandlerClass) env->DeleteGlobalRef(interruptHandlerClass);
     if (jsExceptionClass) env->DeleteGlobalRef(jsExceptionClass);
     if (stringUtf8) env->DeleteGlobalRef(stringUtf8);
     if (stringClass) env->DeleteGlobalRef(stringClass);
@@ -245,11 +264,6 @@ jbyteArray ContextJni::compile(JNIEnv* env, jstring source, jstring file,
 #endif
 }
 
-void ContextJni::setInterruptHandler(JNIEnv* env, jobject newHandler) {
-  if (interruptHandler) env->DeleteGlobalRef(interruptHandler);
-  interruptHandler = newHandler ? env->NewGlobalRef(newHandler) : nullptr;
-}
-
 jobject ContextJni::memoryUsage(JNIEnv* env) {
   // Return null if the JsEngine classes we depend on weren't found at
   // construction time (means an old jar with the old class name).
@@ -291,26 +305,6 @@ jobject ContextJni::memoryUsage(JNIEnv* env) {
       static_cast<jlong>(0),                       // binary_object_count
       static_cast<jlong>(0)                        // binary_object_size
   );
-}
-
-void ContextJni::setMemoryLimit(JNIEnv* env, jlong limit) {
-  if (limit < 0) return;
-  // Hermes' GC grows up to MaxHeapSize. The setter lives on the Builder;
-  // we rebuild the config chain through it.
-  gcConfig = gcConfig.rebuild()
-                  .withMaxHeapSize(static_cast<uint32_t>(limit))
-                  .build();
-  runtimeConfig = runtimeConfig.rebuild().withGCConfig(gcConfig).build();
-}
-
-void ContextJni::setGcThreshold(JNIEnv* /*env*/, jlong /*gcThreshold*/) {
-  // No-op in Hermes: GC is heap-pressure driven, no threshold callback.
-  // The Hermes OccupancyTarget knob could be exposed later.
-}
-
-void ContextJni::setMaxStackSize(JNIEnv* /*env*/, jlong /*stackSize*/) {
-  // No-op in Hermes: stack overflow is guarded by NativeStackGap, set at
-  // runtime construction. Resizing at runtime is not supported.
 }
 
 void ContextJni::gc(JNIEnv* /*env*/) {
@@ -375,10 +369,10 @@ ContextJni::toJavaObject(JNIEnv* env, const jsi::Value& value, bool throwOnUnsup
   if (value.isNumber()) {
     double d = value.asNumber();
     // If it's representable as int, box as Integer; otherwise Double.
-    int32_t asInt = static_cast<int32_t>(d);
-    if (static_cast<double>(asInt) == d) {
+    int32_t asInt;
+    if (tryAsInt32(d, asInt)) {
       jvalue v;
-      v.j = asInt;
+      v.i = asInt;
       return env->CallStaticObjectMethodA(integerClass, integerValueOf, &v);
     }
     jvalue v;
@@ -641,8 +635,8 @@ void ContextJni::cacheRdmaBridgeMethods(JNIEnv* env) {
 jobject ContextJni::jsValueToJsonElement(JNIEnv* env, const jsi::Value& val) {
   if (val.isNumber()) {
     double v = val.asNumber();
-    if (v == static_cast<jlong>(v)) { // Whether JS number is long
-      jlong lv = static_cast<jlong>(v);
+    int64_t lv;
+    if (tryAsInt64(v, lv)) { // Whether JS number is integral and fits in long
       if (lv >= INT32_MIN && lv <= INT32_MAX) {
         return env->CallStaticObjectMethod(
             rdmaBridgeClass, rdmaBridgeJsonPrimitiveInt, static_cast<jint>(lv));

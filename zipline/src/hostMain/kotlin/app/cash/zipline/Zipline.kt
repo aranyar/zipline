@@ -198,10 +198,6 @@ actual class Zipline private constructor(
       eventListener: EventListener = EventListener.NONE,
     ): Zipline {
       val jsEngine = JsEngine.create()
-      // The default stack size is 256 KiB. QuickJS is not graceful when the stack size is exceeded
-      // so we set a high limit so it only fails on definitely buggy code, not just recursive code.
-      // Expect callers to use 8 MiB stack sizes for their calling threads.
-      jsEngine.maxStackSize = 6 * 1024 * 1024L
       initModuleLoader(jsEngine)
 
       val scope = CoroutineScope(dispatcher)

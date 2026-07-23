@@ -446,6 +446,11 @@ int HermesCore_installModuleLoader(void* context, char** errorOut) {
           }
         }
 
+        // define(id, deps, factory): the id is the leading string argument.
+        if (modId.empty() && count >= 1 && args[0].isString()) {
+          modId = args[0].asString(runtime).utf8(runtime);
+        }
+
         if (modId.empty()) {
           jsi::Value currentModId = runtime.global().getProperty(runtime, "app_cash_zipline_currentModuleId");
           if (currentModId.isString()) {
