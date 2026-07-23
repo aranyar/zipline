@@ -78,6 +78,11 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
+# Resolve active iOS SDKs through xcrun so we don't depend on a hardcoded
+# Xcode.app path. The selected SDK follows xcode-select / DEVELOPER_DIR.
+IPHONEOS_SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+IPHONESIMULATOR_SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+
 # Pin to the vendored Hermes revision so bytecode stays compatible.
 HERMES_REV="$(git -C "$HERMES_SRC" rev-parse HEAD 2>/dev/null || echo '<not a git repo>')"
 echo "==> Building Hermes @ $HERMES_REV"
@@ -85,6 +90,8 @@ echo "    source:         $HERMES_SRC"
 echo "    host build:     $HERMES_BUILD_HOST"
 echo "    macOS build:    $HERMES_BUILD_MACOS"
 echo "    macOS static:   $HERMES_BUILD_STATIC"
+echo "    iOS SDK:        $IPHONEOS_SDK"
+echo "    iOS sim SDK:    $IPHONESIMULATOR_SDK"
 echo "    jobs:           $JOBS"
 
 ###############################################################################
@@ -142,7 +149,7 @@ IOS_DEVICE_DYLIB="$IOS_DEVICE_BUILD/_hermes/lib/hermesvm.framework/hermesvm"
 cmake -S "$JNI_BUILD_SRC" -B "$IOS_DEVICE_BUILD" -G Ninja \
   -DCMAKE_BUILD_TYPE=MinSizeRel \
   -DCMAKE_SYSTEM_NAME=iOS \
-  -DCMAKE_OSX_SYSROOT=/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk \
+  -DCMAKE_OSX_SYSROOT="$IPHONEOS_SDK" \
   -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
   -DCMAKE_OSX_ARCHITECTURES=arm64 \
   -DHERMESVM_LEAN=ON \
@@ -176,7 +183,7 @@ IOS_SIM_DYLIB="$IOS_SIM_GLUE_BUILD/_hermes/lib/hermesvm.framework/hermesvm"
 cmake -S "$JNI_BUILD_SRC" -B "$IOS_SIM_GLUE_BUILD" -G Ninja \
   -DCMAKE_BUILD_TYPE=MinSizeRel \
   -DCMAKE_SYSTEM_NAME=iOS \
-  -DCMAKE_OSX_SYSROOT=/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk \
+  -DCMAKE_OSX_SYSROOT="$IPHONESIMULATOR_SDK" \
   -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
   -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" \
   -DHERMESVM_LEAN=ON \

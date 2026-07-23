@@ -33,14 +33,12 @@ val copyTestingJs = tasks.register<Copy>("copyTestingJs") {
   from(rootDir.resolve("zipline-testing/build/compileSync/js/main/developmentLibrary/kotlin"))
 }
 
-// Hermes is built by `host-build.sh` (see buildHermesJni below). For iOS it
-// produces glue dylibs under `zipline/build/hermes-klib/<target>/libhermesvm.dylib`
-// which are published as classified Maven artifacts of the iOS klib modules
-// (e.g. zipline-iosarm64:<version>:hermes@dylib).
-// Consumers (e.g. compose-live) resolve the artifact, then:
-//   1. Link with `-L<dir>` / `-lhermesvm` (the klib already records
-//      `-lhermesvm` and the Frameworks rpaths).
-//   2. Embed the dylib into the iOS app's Frameworks/ directory.
+// Hermes is built in two ways:
+//   1. For Android and host JVM: `buildHermesJni` runs `host-build.sh`.
+//   2. For iOS: the per-target Gradle tasks below run CMake and produce a
+//      single static archive `libhermesvm.a`. The archive is embedded in the
+//      iOS Kotlin/Native klib via cinterop staticLibraries, so consumers only
+//      need the Gradle dependency; no separate framework/dylib is required.
 tasks.withType<KotlinNativeTest>().configureEach {
   dependsOn(":zipline-testing:compileDevelopmentLibraryKotlinJs")
 }
@@ -156,42 +154,72 @@ kotlin {
     targets.withType<KotlinNativeTarget> {
       val main by compilations.getting
 
+      // iOS uses a generated cinterop definition that embeds the static
+      // Hermes+glue archive built by the per-target Gradle tasks below.
+      // macOS/Linux keep using the checked-in def file plus dynamic lookup
+      // of the host dylib built by host-build.sh.
+      val hermesDefFile = when (konanTarget.family) {
+        Family.IOS -> {
+          val defDir = layout.buildDirectory.dir("generated/cinterop").get().asFile
+            .also { it.mkdirs() }
+          val defFile = File(defDir, "hermes-${konanTarget.name}.def")
+          val hermesStaticDir = layout.buildDirectory
+            .dir("hermes-static/${konanTarget.name}/cmake").get().asFile
+          defFile.writeText(
+            """
+            package = app.cash.zipline.hermes
+            headers = ${file("native/hermes-ios/hermes-ios.h").absolutePath} ${file("native/hermes-core.h").absolutePath}
+            compilerOpts = -I${file("native/hermes-ios").absolutePath} -I${file("native").absolutePath}
+            staticLibraries = libhermesvm.a
+            libraryPaths = ${hermesStaticDir.absolutePath}
+            linkerOpts.ios = -framework Foundation -lsqlite3
+            """.trimIndent()
+          )
+          defFile
+        }
+        else -> file("src/nativeInterop/cinterop/hermes.def")
+      }
+
       main.cinterops {
         create("hermes") {
-          defFile(file("src/nativeInterop/cinterop/hermes.def"))
+          defFile(hermesDefFile)
           packageName("app.cash.zipline.hermes")
-          // Header/include paths must come from the DSL (not the def file) so
-          // they are anchored at the project directory and stay portable.
-          headers(file("native/hermes-ios/hermes-ios.h"))
-          includeDirs(file("native/hermes-ios"), file("native"))
+          if (konanTarget.family != Family.IOS) {
+            // Header/include paths must come from the DSL (not the def file) so
+            // they are anchored at the project directory and stay portable.
+            headers(file("native/hermes-ios/hermes-ios.h"))
+            includeDirs(file("native/hermes-ios"), file("native"))
+          }
         }
       }
 
       // The hermes.def cinterop file cannot use an absolute `-L` path (it must
       // stay portable across machines), so the library search path is supplied
-      // here for every native binary (test executables need it too). iOS
-      // targets link the platform-correct dylib staged by host-build.sh;
-      // macOS/Linux use the flat build/hermes-ios dir.
+      // here for every native binary (test executables need it too). iOS has
+      // the static archive embedded in its klib, so it does not need -L.
       binaries.all {
-        linkerOpts += when (konanTarget.family) {
-          Family.IOS ->
-            "-L${rootDir}/zipline/build/hermes-klib/" +
-              if (konanTarget == KonanTarget.IOS_ARM64) "ios-arm64" else "ios-simulator"
-          else -> "-L${rootDir}/zipline/build/hermes-ios"
+        if (konanTarget.family != Family.IOS) {
+          linkerOpts += "-L${rootDir}/zipline/build/hermes-ios"
         }
       }
 
       binaries.withType<Framework> {
-        linkerOpts += listOf(
-          "-lhermesvm",
-          "-lsqlite3",
-          // Tell the dynamic loader where to find bundled dylibs at runtime.
-          // Consumers must place libhermesvm.dylib inside the framework's
-          // Frameworks/ subdirectory (or the app's Frameworks/ directory) for
-          // the loader to find it at app launch.
-          "-rpath", "@loader_path/Frameworks",
-          "-rpath", "@executable_path/Frameworks",
-        )
+        when (konanTarget.family) {
+          Family.IOS -> linkerOpts += listOf(
+            "-framework", "Foundation",
+            "-lsqlite3",
+          )
+          else -> linkerOpts += listOf(
+            "-lhermesvm",
+            "-lsqlite3",
+            // Tell the dynamic loader where to find bundled dylibs at runtime.
+            // Consumers must place libhermesvm.dylib inside the framework's
+            // Frameworks/ subdirectory (or the app's Frameworks/ directory) for
+            // the loader to find it at app launch.
+            "-rpath", "@loader_path/Frameworks",
+            "-rpath", "@executable_path/Frameworks",
+          )
+        }
       }
     }
 
@@ -299,13 +327,12 @@ val preBuildHermesHost: TaskProvider<Exec> =
 
 val buildHermesJni: TaskProvider<Exec> =
   tasks.register<Exec>("buildHermesJni") {
-    description = "Build Hermes JNI libraries (full for host JVM, lean for Android/iOS)"
+    description = "Build Hermes JNI libraries (full for host JVM, lean for Android)"
     group = "build"
     workingDir(rootProject.projectDir)
     inputs.dir(File(rootProject.projectDir, "zipline/native/hermes-jni-build"))
     outputs.dir(File(rootProject.projectDir, "zipline/src/jvmMain/resources/jni"))
     outputs.dir(File(rootProject.projectDir, "zipline/src/androidMain/resources/jniLibs"))
-    outputs.dir(File(rootProject.projectDir, "zipline/build/hermes-klib"))
     val jobs = Runtime.getRuntime().availableProcessors().toString()
     if (javaHome != null) {
       val jh: Any = javaHome!!
@@ -316,50 +343,102 @@ val buildHermesJni: TaskProvider<Exec> =
     )
   }
 
-// The iOS dylibs staged by host-build.sh are published as classified
-// artifacts of the iOS klib modules (see the publishing block below), so
-// they must exist before the iOS compilations run.
-tasks.matching {
-  it.name == "compileKotlinIosArm64" ||
-    it.name == "compileKotlinIosX64" ||
-    it.name == "compileKotlinIosSimulatorArm64"
-}.configureEach { dependsOn(buildHermesJni) }
-
-// Ship the Hermes glue dylibs via Maven as classified artifacts of a
-// dedicated publication, e.g.:
-//   io.github.tret9:zipline-hermes-ios:<version>:ios-arm64@dylib
-//   io.github.tret9:zipline-hermes-ios:<version>:ios-simulator@dylib
-// Consumers resolve them through a plain Gradle configuration, extract
-// libhermesvm.dylib, link with `-L<dir> -lhermesvm`, and embed the dylib in
-// their app's Frameworks directory (the klib already records -lhermesvm and
-// the @loader_path/@executable_path/Frameworks rpaths).
-//
-// The dylibs are NOT attached to the iOS klib publications: ad-hoc artifacts
-// are missing from Gradle Module Metadata, so variant-aware resolution would
-// reject them. A standalone POM-only publication keeps classifier resolution
-// working with plain Maven semantics.
-afterEvaluate {
-  publishing {
-    publications {
-      create<MavenPublication>("hermesIosDylibs") {
-        artifactId = "zipline-hermes-ios"
-        artifact(layout.buildDirectory.file("hermes-klib/ios-arm64/libhermesvm.dylib")) {
-          classifier = "ios-arm64"
-          extension = "dylib"
-          builtBy(buildHermesJni)
-        }
-        artifact(layout.buildDirectory.file("hermes-klib/ios-simulator/libhermesvm.dylib")) {
-          classifier = "ios-simulator"
-          extension = "dylib"
-          builtBy(buildHermesJni)
-        }
-      }
-    }
+// Build a merged static Hermes+Zipline archive for a single iOS variant.
+// The output libhermesvm.a is embedded in the iOS Kotlin/Native klib.
+fun registerBuildHermesStaticIos(
+  konanTarget: KonanTarget,
+  sdk: String,
+  architectures: String,
+): TaskProvider<Exec> {
+  val lowerName = konanTarget.name
+  val buildDir = layout.buildDirectory.dir("hermes-static/$lowerName/cmake").get().asFile
+  val outputFile = File(buildDir, "libhermesvm.a")
+  val inputFiles = listOf(
+    file("native/hermes-core.cpp"),
+    file("native/hermes-core.h"),
+    file("native/hermes-ios/hermes-ios.cpp"),
+    file("native/hermes-ios/hermes-ios.h"),
+    file("native/ContextNative.cpp"),
+    file("native/ContextNative.h"),
+    file("native/ContextBase.cpp"),
+    file("native/common/JsIntrinsics.cpp"),
+    file("native/hermes-jni-build/CMakeLists.txt"),
+  )
+  return tasks.register<Exec>("buildHermesStatic${lowerName.replaceUnderscoreCamelCase()}") {
+    description = "Build static Hermes archive for ${konanTarget.name}"
+    group = "build"
+    dependsOn(preBuildHermesHost)
+    inputs.dir(jsEngineRoot)
+    inputFiles.forEach { inputs.file(it) }
+    outputs.file(outputFile)
+    val cmakeBin = System.getenv("CMAKE_BIN") ?: "cmake"
+    val jobs = Runtime.getRuntime().availableProcessors().toString()
+    workingDir(rootProject.projectDir)
+    commandLine(
+      "sh", "-c",
+      """
+      set -euo pipefail
+      SDK_PATH=$(xcrun --sdk '$sdk' --show-sdk-path)
+      CC=$(xcrun --sdk '$sdk' -find clang)
+      CXX=$(xcrun --sdk '$sdk' -find clang++)
+      $cmakeBin -S '${file("native/hermes-jni-build").absolutePath}' \
+        -B '${buildDir.absolutePath}' \
+        -G Ninja \
+        -DCMAKE_BUILD_TYPE=MinSizeRel \
+        -DCMAKE_SYSTEM_NAME=iOS \
+        -DCMAKE_C_COMPILER="${'$'}CC" \
+        -DCMAKE_CXX_COMPILER="${'$'}CXX" \
+        -DCMAKE_OSX_SYSROOT="${'$'}SDK_PATH" \
+        -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
+        -DCMAKE_OSX_ARCHITECTURES='$architectures' \
+        -DHERMESVM_LEAN=ON \
+        -DHERMES_IOS_STATIC=ON \
+        -DHERMES_SRC='${jsEngineRoot.absolutePath}' \
+        -DIMPORT_HOST_COMPILERS='${hermesImportCompilers.absolutePath}'
+      $cmakeBin --build '${buildDir.absolutePath}' --target hermesvm_static -j $jobs
+      """.trimIndent()
+    )
   }
 }
 
-tasks.matching { it.name == "publishToMavenLocal" || it.name.startsWith("publish") }
-  .configureEach { dependsOn(buildHermesJni) }
+// Turn ios_arm64 / ios_x64 / ios_simulator_arm64 into IosArm64 / IosX64 / IosSimulatorArm64.
+fun String.replaceUnderscoreCamelCase(): String =
+  split("_").joinToString("") { it.replaceFirstChar { ch -> ch.uppercase() } }
+
+val buildHermesStaticIosArm64 =
+  registerBuildHermesStaticIos(
+    KonanTarget.IOS_ARM64,
+    sdk = "iphoneos",
+    architectures = "arm64",
+  )
+
+val buildHermesStaticIosX64 =
+  registerBuildHermesStaticIos(
+    KonanTarget.IOS_X64,
+    sdk = "iphonesimulator",
+    architectures = "x86_64",
+  )
+
+val buildHermesStaticIosSimulatorArm64 =
+  registerBuildHermesStaticIos(
+    KonanTarget.IOS_SIMULATOR_ARM64,
+    sdk = "iphonesimulator",
+    architectures = "arm64",
+  )
+
+// The iOS Kotlin/Native interop tasks need the static archive to exist so
+// cinterop can copy it into the hermes.klib.
+listOf(
+  "cinteropHermesIosArm64" to buildHermesStaticIosArm64,
+  "cinteropHermesIosX64" to buildHermesStaticIosX64,
+  "cinteropHermesIosSimulatorArm64" to buildHermesStaticIosSimulatorArm64,
+).forEach { (taskName, staticTask) ->
+  tasks.matching { it.name == taskName }.configureEach { dependsOn(staticTask) }
+}
+
+// Host-side (JVM) and Android publications still depend on the host-build.sh
+// artifacts. iOS klibs pull in the static archive via the cinterop dependency
+// above; they no longer need the dylib staged by host-build.sh.
 
 // Also ensure Hermes JNI libs are built before JVM resource processing and jar tasks
 tasks.matching { it.name == "jvmJar" || it.name == "jvmProcessResources" }
