@@ -11,6 +11,9 @@ import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTargetWithTests
 import org.jetbrains.kotlin.gradle.plugin.mpp.NativeBuildType
 import org.jetbrains.kotlin.gradle.plugin.mpp.TestExecutable
 import org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeTest
+import org.jetbrains.kotlin.konan.target.Family
+import org.jetbrains.kotlin.konan.target.KonanTarget
+import org.gradle.api.publish.maven.MavenPublication
 
 plugins {
   kotlin("multiplatform")
@@ -30,15 +33,14 @@ val copyTestingJs = tasks.register<Copy>("copyTestingJs") {
   from(rootDir.resolve("zipline-testing/build/compileSync/js/main/developmentLibrary/kotlin"))
 }
 
-// Hermes is built by `host-build.sh` (see buildHermesJni below). It produces
-// `zipline/build/hermes-ios/libhermesvm.dylib` which consumers (e.g.
-// compose-live) need to embed into the iOS app bundle. Consumers should add
-// a Gradle task that:
-//   1. Builds the dylib via `./gradlew :zipline:buildHermesJni` (or extracts
-//      it from a Maven-published location).
-//   2. Copies it into the Kotlin/Native framework's `Frameworks/` subdirectory.
-//   3. Adds it to the iOS app's "Embed Frameworks" build phase.
-// The rpath linker options below ensure the loader finds it at runtime.
+// Hermes is built by `host-build.sh` (see buildHermesJni below). For iOS it
+// produces glue dylibs under `zipline/build/hermes-klib/<target>/libhermesvm.dylib`
+// which are published as classified Maven artifacts of the iOS klib modules
+// (e.g. zipline-iosarm64:<version>:hermes@dylib).
+// Consumers (e.g. compose-live) resolve the artifact, then:
+//   1. Link with `-L<dir>` / `-lhermesvm` (the klib already records
+//      `-lhermesvm` and the Frameworks rpaths).
+//   2. Embed the dylib into the iOS app's Frameworks/ directory.
 tasks.withType<KotlinNativeTest>().configureEach {
   dependsOn(":zipline-testing:compileDevelopmentLibraryKotlinJs")
 }
@@ -167,9 +169,16 @@ kotlin {
 
       // The hermes.def cinterop file cannot use an absolute `-L` path (it must
       // stay portable across machines), so the library search path is supplied
-      // here for every native binary (test executables need it too).
+      // here for every native binary (test executables need it too). iOS
+      // targets link the platform-correct dylib staged by host-build.sh;
+      // macOS/Linux use the flat build/hermes-ios dir.
       binaries.all {
-        linkerOpts += "-L${rootDir}/zipline/build/hermes-ios"
+        linkerOpts += when (konanTarget.family) {
+          Family.IOS ->
+            "-L${rootDir}/zipline/build/hermes-klib/" +
+              if (konanTarget == KonanTarget.IOS_ARM64) "ios-arm64" else "ios-simulator"
+          else -> "-L${rootDir}/zipline/build/hermes-ios"
+        }
       }
 
       binaries.withType<Framework> {
@@ -296,6 +305,7 @@ val buildHermesJni: TaskProvider<Exec> =
     inputs.dir(File(rootProject.projectDir, "zipline/native/hermes-jni-build"))
     outputs.dir(File(rootProject.projectDir, "zipline/src/jvmMain/resources/jni"))
     outputs.dir(File(rootProject.projectDir, "zipline/src/androidMain/resources/jniLibs"))
+    outputs.dir(File(rootProject.projectDir, "zipline/build/hermes-klib"))
     val jobs = Runtime.getRuntime().availableProcessors().toString()
     if (javaHome != null) {
       val jh: Any = javaHome!!
@@ -305,6 +315,48 @@ val buildHermesJni: TaskProvider<Exec> =
       "sh", "./zipline/host-build.sh"
     )
   }
+
+// The iOS dylibs staged by host-build.sh are published as classified
+// artifacts of the iOS klib modules (see the publishing block below), so
+// they must exist before the iOS compilations run.
+tasks.matching {
+  it.name == "compileKotlinIosArm64" ||
+    it.name == "compileKotlinIosX64" ||
+    it.name == "compileKotlinIosSimulatorArm64"
+}.configureEach { dependsOn(buildHermesJni) }
+
+// Ship the Hermes glue dylibs via Maven as classified artifacts of a
+// dedicated publication, e.g.:
+//   io.github.tret9:zipline-hermes-ios:<version>:ios-arm64@dylib
+//   io.github.tret9:zipline-hermes-ios:<version>:ios-simulator@dylib
+// Consumers resolve them through a plain Gradle configuration, extract
+// libhermesvm.dylib, link with `-L<dir> -lhermesvm`, and embed the dylib in
+// their app's Frameworks directory (the klib already records -lhermesvm and
+// the @loader_path/@executable_path/Frameworks rpaths).
+//
+// The dylibs are NOT attached to the iOS klib publications: ad-hoc artifacts
+// are missing from Gradle Module Metadata, so variant-aware resolution would
+// reject them. A standalone POM-only publication keeps classifier resolution
+// working with plain Maven semantics.
+afterEvaluate {
+  publishing {
+    publications {
+      create<MavenPublication>("hermesIosDylibs") {
+        artifactId = "zipline-hermes-ios"
+        artifact(layout.buildDirectory.file("hermes-klib/ios-arm64/libhermesvm.dylib")) {
+          classifier = "ios-arm64"
+          extension = "dylib"
+          builtBy(buildHermesJni)
+        }
+        artifact(layout.buildDirectory.file("hermes-klib/ios-simulator/libhermesvm.dylib")) {
+          classifier = "ios-simulator"
+          extension = "dylib"
+          builtBy(buildHermesJni)
+        }
+      }
+    }
+  }
+}
 
 tasks.matching { it.name == "publishToMavenLocal" || it.name.startsWith("publish") }
   .configureEach { dependsOn(buildHermesJni) }
