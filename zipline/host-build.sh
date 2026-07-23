@@ -92,7 +92,7 @@ echo "    jobs:           $JOBS"
 # in step 2 (InternalJavaScript step uses both).
 ###############################################################################
 echo ""
-echo "==> [1/4] Building host hermesc + shermes ..."
+echo "==> [1/3] Building host hermesc + shermes ..."
 cmake -S "$HERMES_SRC" -B "$HERMES_BUILD_HOST" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release
 cmake --build "$HERMES_BUILD_HOST" --target hermesc shermes -j "$JOBS"
@@ -114,7 +114,7 @@ echo "    cmake-import: $HERMES_BUILD_HOST/ImportHostCompilers.cmake"
 # + libjsi.dylib). Built in one CMake invocation to share object files.
 ###############################################################################
 echo ""
-echo "==> [2/4] Building macOS shared VMs (x86_64 + arm64) ..."
+echo "==> [2/3] Building macOS shared VMs (x86_64 + arm64) ..."
 cmake -S "$HERMES_SRC" -B "$HERMES_BUILD_MACOS" -G Ninja \
   -DCMAKE_BUILD_TYPE=MinSizeRel \
   -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" \
@@ -130,71 +130,9 @@ cmake -S "$HERMES_SRC" -B "$HERMES_BUILD_MACOS" -G Ninja \
 cmake --build "$HERMES_BUILD_MACOS" --target hermesvm hermesvmlean jsi -j "$JOBS"
 
 ###############################################################################
-# iOS Simulator shared VM (x86_64 + arm64-simulator). Built separately because
-# iOS Simulator requires different platform/SDK settings. Output is a single
-# universal dylib placed at $HERMES_IOS_SIM/libhermesvm.dylib.
-###############################################################################
-echo ""
-echo "==> [3/4] Building iOS Simulator shared VM (x86_64 + arm64-simulator) ..."
-HERMES_BUILD_IOS_SIM="$HERMES_SRC/build_ios_simulator"
-HERMES_IOS_SIM="$HERMES_SRC/ios_simulator_lib"
-
-# Find iOS Simulator SDK path. Prefer the latest installed.
-IOS_SIM_SDK_PATH="$(xcrun --sdk iphonesimulator --show-sdk-path 2>/dev/null || true)"
-if [[ -z "$IOS_SIM_SDK_PATH" ]]; then
-  echo "ERROR: iOS Simulator SDK not found. Install Xcode Command Line Tools." >&2
-  exit 1
-fi
-
-cmake -S "$HERMES_SRC" -B "$HERMES_BUILD_IOS_SIM" -G Ninja \
-  -DCMAKE_BUILD_TYPE=MinSizeRel \
-  -DCMAKE_SYSTEM_NAME=iOS \
-  -DCMAKE_OSX_SYSROOT=iphonesimulator \
-  -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
-  -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" \
-  -DHERMES_ENABLE_DEBUGGER=OFF \
-  -DHERMES_ENABLE_INTL=ON \
-  -DHERMES_ENABLE_TEST_SUITE=OFF \
-  -DHERMES_ENABLE_TOOLS=OFF \
-  -DHERMES_BUILD_SHARED_JSI=ON \
-  -DHERMES_BUILD_APPLE_FRAMEWORK=ON \
-  -DHERMESVM_LEAN=ON \
-  -DJSI_DIR="$HERMES_SRC/API/jsi" \
-  -DIMPORT_HOST_COMPILERS="$HERMES_BUILD_HOST/ImportHostCompilers.cmake"
-cmake --build "$HERMES_BUILD_IOS_SIM" --target hermesvmlean -j "$JOBS"
-# Remove any stale hermesvm.framework from a previous full build before
-# the staging step renames the new lean framework.
-rm -rf "$HERMES_BUILD_IOS_SIM/lib/hermesvm.framework"
-
-# Stage the iOS Simulator dylib AND framework at known locations for
-# Kotlin/Native consumers. We also copy hermes-ios.h and hermes-core.h
-# alongside. The lean build produces hermesvmlean.framework which we
-# expose as hermesvm.framework for backwards compatibility with the
-# downstream consumers.
-mkdir -p "$HERMES_IOS_SIM"
-if [[ -f "$HERMES_BUILD_IOS_SIM/lib/libhermesvmlean.dylib" ]]; then
-  cp "$HERMES_BUILD_IOS_SIM/lib/libhermesvmlean.dylib" "$HERMES_IOS_SIM/libhermesvm-ios-simulator.dylib"
-  echo "    -> $HERMES_IOS_SIM/libhermesvm-ios-simulator.dylib"
-fi
-if [[ -d "$HERMES_BUILD_IOS_SIM/lib/hermesvmlean.framework" ]]; then
-  rm -rf "$HERMES_IOS_SIM/hermesvm.framework"
-  # Update CFBundleExecutable in Info.plist before staging so the bundle
-  # stays internally consistent.
-  if [[ -f "$HERMES_BUILD_IOS_SIM/lib/hermesvmlean.framework/Info.plist" ]]; then
-    /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable hermesvm" "$HERMES_BUILD_IOS_SIM/lib/hermesvmlean.framework/Info.plist" 2>/dev/null || true
-  fi
-  cp -R "$HERMES_BUILD_IOS_SIM/lib/hermesvmlean.framework" "$HERMES_IOS_SIM/hermesvm.framework"
-  # Fix the install_name in the staged binary too.
-  if [[ -f "$HERMES_IOS_SIM/hermesvm.framework/hermesvm" ]]; then
-    install_name_tool -id "@rpath/hermesvm.framework/hermesvm" "$HERMES_IOS_SIM/hermesvm.framework/hermesvm"
-  fi
-  echo "    -> $HERMES_IOS_SIM/hermesvm.framework (iOS Simulator, lean)"
-fi
-
-###############################################################################
 # Build our iOS glue framework (hermes-core.cpp + hermes-ios.c + Hermes)
 # via hermes-jni-build for iOS device (arm64). This produces a dylib that
-# we convert to a framework.
+# we stage for KMP/Maven distribution (packed into the iosArm64 klib).
 ###############################################################################
 echo ""
 echo "==> Building iOS device glue framework (arm64, lean) ..."
@@ -227,8 +165,8 @@ fi
 
 ###############################################################################
 # Build our iOS glue framework (hermes-core.cpp + hermes-ios.c + Hermes)
-# via hermes-jni-build for iOS simulator (x86_64 + arm64). This produces a
-# dylib that we convert to a framework.
+# via hermes-jni-build for iOS simulator (x86_64 + arm64). Staged as a dylib
+# for KMP/Maven distribution (packed into the iosX64/iosSimulatorArm64 klibs).
 ###############################################################################
 echo ""
 echo "==> Building iOS simulator glue framework (x86_64 + arm64, lean) ..."
@@ -261,65 +199,36 @@ else
 fi
 
 ###############################################################################
-# Rename hermesvmlean.framework to hermesvm.framework so consumers (which
-# reference `-framework hermesvm`) keep working without changes. Also rename
-# the inner binary, update Info.plist's CFBundleExecutable, and fix the
-# Mach-O install_name so dynamic linking still resolves the bundle.
+# Stage iOS dylibs for KMP/Maven distribution. The glue framework binaries
+# are plain Mach-O dylibs; extract them, point the install_name at
+# @rpath/libhermesvm.dylib, and place them under build/hermes-klib/<target>/.
+# Gradle packs these into the published klibs as iosArm64 / iosX64 /
+# iosSimulatorArm64 resources; consumers extract the dylib from the klib and
+# embed it into their app's Frameworks directory (see zipline/build.gradle.kts).
 ###############################################################################
-rename_lean_framework() {
-  local src_dir="$1"
-  if [[ -d "$src_dir/hermesvmlean.framework" ]]; then
-    # Remove any stale hermesvm.framework from a previous full build so the
-    # rename doesn't nest the new framework inside the old one.
-    rm -rf "$src_dir/hermesvm.framework"
-    if [[ -f "$src_dir/hermesvmlean.framework/hermesvmlean" ]]; then
-      mv "$src_dir/hermesvmlean.framework/hermesvmlean" "$src_dir/hermesvmlean.framework/hermesvm"
-    fi
-    # Update Info.plist so CFBundleExecutable points to the renamed binary.
-    if [[ -f "$src_dir/hermesvmlean.framework/Info.plist" ]]; then
-      /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable hermesvm" "$src_dir/hermesvmlean.framework/Info.plist" 2>/dev/null || true
-    fi
-    mv "$src_dir/hermesvmlean.framework" "$src_dir/hermesvm.framework"
-    # Fix the install_name embedded in the binary so dependent dylibs
-    # resolve @rpath/hermesvm.framework/hermesvm (not hermesvmlean).
-    if [[ -f "$src_dir/hermesvm.framework/hermesvm" ]]; then
-      install_name_tool -id "@rpath/hermesvm.framework/hermesvm" "$src_dir/hermesvm.framework/hermesvm"
-    fi
+KLIB_STAGING="$SCRIPT_DIR/build/hermes-klib"
+rm -rf "$KLIB_STAGING"
+
+stage_ios_dylib() {
+  local src="$1" dst_dir="$2"
+  if [[ ! -f "$src" ]]; then
+    echo "ERROR: expected glue framework binary at $src" >&2
+    exit 1
   fi
+  mkdir -p "$dst_dir"
+  cp "$src" "$dst_dir/libhermesvm.dylib"
+  install_name_tool -id "@rpath/libhermesvm.dylib" "$dst_dir/libhermesvm.dylib"
+  echo "    -> $dst_dir/libhermesvm.dylib"
 }
-rename_lean_framework "$IOS_DEVICE_BUILD/_hermes/lib"
-rename_lean_framework "$IOS_SIM_GLUE_BUILD/_hermes/lib"
 
-###############################################################################
-# Build the hermesvm.xcframework from our glue frameworks.
-###############################################################################
 echo ""
-echo "==> Building hermesvm.xcframework with OUR GLUE (device + simulator) ..."
-HERMES_XCFRAMEWORK="$SCRIPT_DIR/build/hermesvm.xcframework"
-rm -rf "$HERMES_XCFRAMEWORK"
-IOS_DEVICE_FMWK="$JNI_BUILD_SRC/build_ios_device/_hermes/lib/hermesvm.framework"
-IOS_SIM_FMWK="$JNI_BUILD_SRC/build_ios_simulator_glue/_hermes/lib/hermesvm.framework"
-
-add_hermes_headers() {
-  local framework_path="$1"
-  mkdir -p "$framework_path/Headers"
-  cp "$SCRIPT_DIR/native/hermes-ios/hermes-ios.h" "$framework_path/Headers/"
-  cp "$SCRIPT_DIR/native/hermes-core.h" "$framework_path/Headers/"
-}
-
-if [[ -f "$IOS_DEVICE_FMWK/hermesvm" && -f "$IOS_SIM_FMWK/hermesvm" ]]; then
-  add_hermes_headers "$IOS_DEVICE_FMWK"
-  add_hermes_headers "$IOS_SIM_FMWK"
-  xcodebuild -create-xcframework \
-    -framework "$IOS_DEVICE_FMWK" \
-    -framework "$IOS_SIM_FMWK" \
-    -output "$HERMES_XCFRAMEWORK" 2>&1 | tail -3
-  echo "    -> $HERMES_XCFRAMEWORK"
-else
-  echo "    WARN: missing device or simulator framework"
-  echo "    device: $IOS_DEVICE_FMWK"
-  echo "    sim:    $IOS_SIM_FMWK"
-fi
+echo "==> Staging iOS dylibs for klib packaging ..."
+stage_ios_dylib \
+  "$IOS_DEVICE_BUILD/_hermes/lib/hermesvmlean.framework/hermesvmlean" \
+  "$KLIB_STAGING/ios-arm64"
+stage_ios_dylib \
+  "$IOS_SIM_GLUE_BUILD/_hermes/lib/hermesvmlean.framework/hermesvmlean" \
+  "$KLIB_STAGING/ios-simulator"
 
 ###############################################################################
 # Step 4: same build with HERMES_BUILD_SHARED_JSI=OFF, so we get the static
@@ -327,7 +236,7 @@ fi
 # zipline's JNI dylib (see native/hermes/build_jni_dylib.sh).
 ###############################################################################
 echo ""
-echo "==> [4/4] Building macOS static libs (x86_64 + arm64) ..."
+echo "==> [3/3] Building macOS static libs (x86_64 + arm64) ..."
 cmake -S "$HERMES_SRC" -B "$HERMES_BUILD_STATIC" -G Ninja \
   -DCMAKE_BUILD_TYPE=MinSizeRel \
   -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" \
@@ -561,10 +470,8 @@ echo "==> Copying libs and headers for Kotlin/Native cinterop ..."
 CINTEROP_DIR="$SCRIPT_DIR/build/hermes-ios"
 mkdir -p "$CINTEROP_DIR"
 cp "$GLUE_BUILD/libhermesvm.dylib" "$CINTEROP_DIR/"
-cp "$HERMES_IOS_SIM/libhermesvm-ios-simulator.dylib" "$CINTEROP_DIR/" 2>/dev/null || true
 cp "$SCRIPT_DIR/native/hermes-ios/hermes-ios.h" "$CINTEROP_DIR/"
 cp "$SCRIPT_DIR/native/hermes-core.h" "$CINTEROP_DIR/"
 echo "    -> $CINTEROP_DIR/libhermesvm.dylib (macOS universal)"
-echo "    -> $CINTEROP_DIR/libhermesvm-ios-simulator.dylib (iOS Simulator universal)"
 echo "    -> $CINTEROP_DIR/hermes-ios.h"
 echo "    -> $CINTEROP_DIR/hermes-core.h"
