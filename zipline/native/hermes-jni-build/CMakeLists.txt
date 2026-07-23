@@ -63,6 +63,12 @@ endif()
 # Set -DHERMESVM_LEAN=TRUE to enable.
 set(HERMESVM_LEAN OFF CACHE BOOL "Build lean Hermes without the JS compiler")
 
+# Build a single iOS static archive that bundles Hermes + zipline glue.
+# When ON, the iOS branch produces libhermesvm.a (suitable for embedding
+# in a Kotlin/Native klib via cinterop staticLibraries) instead of a
+# dynamic hermesvm.framework.
+set(HERMES_IOS_STATIC OFF CACHE BOOL "Build iOS as a merged static archive")
+
 # Core glue source files (shared across all platforms, but NOT JNI-specific).
 # These are used for macOS host builds.
 set(GLUE_CORE_SOURCES
@@ -203,7 +209,14 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
   set(HERMES_ENABLE_INTL FALSE)
   set(HERMES_UNICODE_LITE TRUE)
   set(HERMES_BUILD_SHARED_JSI OFF)
-  set(HERMES_BUILD_APPLE_FRAMEWORK ON)
+  # When producing a static archive we do not need an Apple framework.
+  if(HERMES_IOS_STATIC)
+    set(HERMES_BUILD_APPLE_FRAMEWORK OFF)
+    # The static umbrella archive path only wires up the lean archive today.
+    set(HERMESVM_LEAN ON CACHE BOOL "" FORCE)
+  else()
+    set(HERMES_BUILD_APPLE_FRAMEWORK ON)
+  endif()
   set(JSI_DIR "${HERMES_SRC}/API/jsi")
   set(HERMES_ENABLE_UNICODE_REGEXP_PROPERTY_ESCAPES OFF)
 
@@ -227,30 +240,66 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
   target_include_directories(zipline_ios_glue PRIVATE
     ${_GLUE_INCLUDES}
     "${_hermes_subdir}/external/llvh/include")
-
   if(HERMESVM_LEAN)
     target_compile_definitions(zipline_ios_glue PRIVATE HERMESVM_LEAN=1)
-    target_link_libraries(hermesvmlean PRIVATE
-      "-Wl,-force_load"
-      zipline_ios_glue)
-  else()
-    target_link_libraries(hermesvm PRIVATE
-      "-Wl,-force_load"
-      zipline_ios_glue
-      "-Wl,-force_load"
-      "${_hermes_subdir}/jsi/libjsi.a"
-      "-Wl,-force_load"
-      "${_hermes_subdir}/external/boost/boost_1_86_0/libs/context/libboost_context.a")
   endif()
 
-  # Exclude the unused hermesvm target so we only build the one we need.
-  if(HERMESVM_LEAN)
+  if(HERMES_IOS_STATIC)
+    # Merge the zipline glue and the Hermes static archives into a single
+    # umbrella archive. This archive is embedded in the iOS Kotlin/Native
+    # klib via cinterop staticLibraries, so consumers do not need a separate
+    # hermesvm.framework.
+
     if(TARGET hermesvm)
       set_target_properties(hermesvm PROPERTIES EXCLUDE_FROM_ALL TRUE)
     endif()
-  else()
     if(TARGET hermesvmlean)
       set_target_properties(hermesvmlean PROPERTIES EXCLUDE_FROM_ALL TRUE)
+    endif()
+
+    set(_HERMES_IOS_STATIC_OUT "${CMAKE_CURRENT_BINARY_DIR}/libhermesvm.a")
+    set(_HERMES_VM_A      "${_hermes_subdir}/lib/libhermesvmlean_a.a")
+    set(_JSI_A            "${_hermes_subdir}/jsi/libjsi.a")
+    set(_BOOST_CTX_A      "${_hermes_subdir}/external/boost/boost_1_86_0/libs/context/libboost_context.a")
+
+    add_custom_command(
+      OUTPUT "${_HERMES_IOS_STATIC_OUT}"
+      COMMAND libtool -static -o "${_HERMES_IOS_STATIC_OUT}"
+        "$<TARGET_FILE:zipline_ios_glue>"
+        "${_HERMES_VM_A}"
+        "${_JSI_A}"
+        "${_BOOST_CTX_A}"
+      DEPENDS zipline_ios_glue hermesvmlean_a jsi boost_context
+      COMMENT "Merging iOS static archive for embedding in klib"
+      VERBATIM
+    )
+    add_custom_target(hermesvm_static ALL DEPENDS "${_HERMES_IOS_STATIC_OUT}")
+  else()
+    # Traditional framework build: force-load the glue into the shared Hermes
+    # framework so all JNI/Native entry points are exported.
+    if(HERMESVM_LEAN)
+      target_link_libraries(hermesvmlean PRIVATE
+        "-Wl,-force_load"
+        zipline_ios_glue)
+    else()
+      target_link_libraries(hermesvm PRIVATE
+        "-Wl,-force_load"
+        zipline_ios_glue
+        "-Wl,-force_load"
+        "${_hermes_subdir}/jsi/libjsi.a"
+        "-Wl,-force_load"
+        "${_hermes_subdir}/external/boost/boost_1_86_0/libs/context/libboost_context.a")
+    endif()
+
+    # Exclude the unused hermesvm target so we only build the one we need.
+    if(HERMESVM_LEAN)
+      if(TARGET hermesvm)
+        set_target_properties(hermesvm PROPERTIES EXCLUDE_FROM_ALL TRUE)
+      endif()
+    else()
+      if(TARGET hermesvmlean)
+        set_target_properties(hermesvmlean PROPERTIES EXCLUDE_FROM_ALL TRUE)
+      endif()
     endif()
   endif()
 

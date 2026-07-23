@@ -12,6 +12,5 @@ include(":zipline-loader")
 include(":zipline-loader-testing")
 include(":zipline-profiler")
 include(":zipline-testing")
-include(":intrinsic-tests")
 
 enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
