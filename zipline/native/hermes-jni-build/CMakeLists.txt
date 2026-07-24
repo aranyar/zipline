@@ -261,16 +261,34 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     set(_HERMES_VM_A      "${_hermes_subdir}/lib/libhermesvmlean_a.a")
     set(_JSI_A            "${_hermes_subdir}/jsi/libjsi.a")
     set(_BOOST_CTX_A      "${_hermes_subdir}/external/boost/boost_1_86_0/libs/context/libboost_context.a")
+    set(_HERMES_EXPORTS   "${CMAKE_CURRENT_SOURCE_DIR}/../hermes-ios.exports")
+    set(_PRELINKED_O      "${CMAKE_CURRENT_BINARY_DIR}/libhermesvm_prelinked.o")
 
+    # Newer Xcode ld requires an explicit -platform_version for -r links.
+    if(CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
+      set(_LD_PLATFORM "ios-simulator")
+    else()
+      set(_LD_PLATFORM "ios")
+    endif()
+
+    # Prelink all archives into a single relocatable object that keeps only
+    # the public C API (hermes-ios.exports) global, then strip local symbols.
+    # This folds duplicated COMDAT code and slims the symbol table, bringing
+    # the umbrella archive from ~5 MB down to ~2.6 MB (dylib is ~1.8 MB).
     add_custom_command(
       OUTPUT "${_HERMES_IOS_STATIC_OUT}"
-      COMMAND libtool -static -o "${_HERMES_IOS_STATIC_OUT}"
+      COMMAND ld -r -arch ${CMAKE_OSX_ARCHITECTURES} -all_load
+        -platform_version ${_LD_PLATFORM} ${CMAKE_OSX_DEPLOYMENT_TARGET} ${CMAKE_OSX_DEPLOYMENT_TARGET}
+        -exported_symbols_list "${_HERMES_EXPORTS}"
+        -o "${_PRELINKED_O}"
         "$<TARGET_FILE:zipline_ios_glue>"
         "${_HERMES_VM_A}"
         "${_JSI_A}"
         "${_BOOST_CTX_A}"
-      DEPENDS zipline_ios_glue hermesvmlean_a jsi boost_context
-      COMMENT "Merging iOS static archive for embedding in klib"
+      COMMAND strip -u -x -S "${_PRELINKED_O}"
+      COMMAND libtool -static -o "${_HERMES_IOS_STATIC_OUT}" "${_PRELINKED_O}"
+      DEPENDS zipline_ios_glue hermesvmlean_a jsi boost_context "${_HERMES_EXPORTS}"
+      COMMENT "Merging + prelinking iOS static archive for embedding in klib"
       VERBATIM
     )
     add_custom_target(hermesvm_static ALL DEPENDS "${_HERMES_IOS_STATIC_OUT}")

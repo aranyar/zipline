@@ -186,8 +186,20 @@ kotlin {
           if (konanTarget.family != Family.IOS) {
             // Header/include paths must come from the DSL (not the def file) so
             // they are anchored at the project directory and stay portable.
-            headers(file("native/hermes-ios/hermes-ios.h"))
-            includeDirs(file("native/hermes-ios"), file("native"))
+            // Use compilerOpts instead of includeDirs: an includeDir on the
+            // whole native/ dir would also track preBuildHermesHost's output
+            // (native/hermes/build_host_hermesc) as an input, which Gradle
+            // rejects as an undeclared task dependency.
+            headers(
+              files(
+                file("native/hermes-ios/hermes-ios.h"),
+                file("native/hermes-core.h"),
+              )
+            )
+            compilerOpts(
+              "-I${file("native/hermes-ios").absolutePath}",
+              "-I${file("native").absolutePath}",
+            )
           }
         }
       }
@@ -362,6 +374,7 @@ fun registerBuildHermesStaticIos(
     file("native/ContextBase.cpp"),
     file("native/common/JsIntrinsics.cpp"),
     file("native/hermes-jni-build/CMakeLists.txt"),
+    file("native/hermes-ios.exports"),
   )
   return tasks.register<Exec>("buildHermesStatic${lowerName.replaceUnderscoreCamelCase()}") {
     description = "Build static Hermes archive for ${konanTarget.name}"
@@ -426,13 +439,18 @@ val buildHermesStaticIosSimulatorArm64 =
   )
 
 // The iOS Kotlin/Native interop tasks need the static archive to exist so
-// cinterop can copy it into the hermes.klib.
+// cinterop can copy it into the hermes.klib. The archive is also declared as
+// an input: dependsOn alone only orders the tasks, so a rebuilt archive
+// would otherwise leave a stale copy inside the klib.
 listOf(
   "cinteropHermesIosArm64" to buildHermesStaticIosArm64,
   "cinteropHermesIosX64" to buildHermesStaticIosX64,
   "cinteropHermesIosSimulatorArm64" to buildHermesStaticIosSimulatorArm64,
 ).forEach { (taskName, staticTask) ->
-  tasks.matching { it.name == taskName }.configureEach { dependsOn(staticTask) }
+  tasks.matching { it.name == taskName }.configureEach {
+    dependsOn(staticTask)
+    inputs.files(staticTask.map { it.outputs.files })
+  }
 }
 
 // Host-side (JVM) and Android publications still depend on the host-build.sh
