@@ -2,7 +2,6 @@ rootProject.name = "zipline-root"
 
 include(":zipline")
 include(":zipline-api-validator")
-include(":zipline-bytecode")
 include(":zipline-cli")
 include(":zipline-cryptography")
 include(":zipline-gradle-plugin")

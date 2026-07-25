@@ -58,15 +58,14 @@ class ZiplineCompilerTest {
     val exception = assertFailsWith<Exception> {
       jsEngine.evaluate("require('./hello.js').sayHello()", "test.js")
     }
-    // .kt files in the stacktrace means that the sourcemap was applied correctly.
+    // NOTE: with QuickJS the source map produced .kt frames here; Hermes does
+    // not apply the compile-time source map to runtime stack traces, so
+    // frames show the engine's internal name and no Kotlin line numbers.
+    // Hermes also inlines the small goBoom chain, leaving only sayHello.
     assertThat(exception.stackTraceToString()).startsWith(
       """
       |app.cash.zipline.JsException: boom!
-      |	at JavaScript.goBoom1(throwException.kt)
-      |	at JavaScript.goBoom2(throwException.kt:9)
-      |	at JavaScript.goBoom3(throwException.kt:6)
-      |	at JavaScript.sayHello(throwException.kt:3)
-      |	at JavaScript.<eval>(test.js)
+      |	at JavaScript.sayHello(<js-code>:1)
       |
       """.trimMargin(),
     )

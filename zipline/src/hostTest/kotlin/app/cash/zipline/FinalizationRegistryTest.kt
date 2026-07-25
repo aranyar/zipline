@@ -21,10 +21,10 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-@Ignore(
-  "Hermes does not implement FinalizationRegistry; blocked on an engine-level " +
-    "polyfill (also gates the leak canary)",
-)
+// Ignored: Hermes does not implement FinalizationRegistry; blocked on an
+// engine-level polyfill (also gates the leak canary). Note kotlin.test.Ignore
+// takes no message on Kotlin/Native, so the reason lives in this comment.
+@Ignore
 class FinalizationRegistryTest {
   private val jsEngine = JsEngine.create()
 

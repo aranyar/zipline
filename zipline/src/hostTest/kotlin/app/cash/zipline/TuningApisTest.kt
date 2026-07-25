@@ -21,10 +21,11 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-@Ignore(
-  "Memory tuning APIs (memoryUsage/memoryLimit/gcThreshold) are stubs in the " +
-    "Hermes engine; no IHermes heap-stats wiring yet",
-)
+// Ignored: memory tuning APIs (memoryUsage/memoryLimit/gcThreshold) throw
+// UnsupportedOperationException in the Hermes engine; no IHermes heap-stats
+// wiring yet. Note kotlin.test.Ignore takes no message on Kotlin/Native, so
+// the reason lives in this comment.
+@Ignore
 class TuningApisTest {
   private val js = JsEngine.create()
 

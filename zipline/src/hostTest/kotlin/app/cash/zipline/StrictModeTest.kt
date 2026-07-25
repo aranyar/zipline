@@ -27,10 +27,11 @@ import kotlin.test.assertFailsWith
  *
  * https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Strict_mode
  */
-@Ignore(
-  "Hermes has no global strict-mode option (QuickJS used JS_EVAL_FLAG_STRICT); " +
-    "guest code runs sloppy unless it declares 'use strict' itself",
-)
+// Ignored: Hermes has no global strict-mode option (QuickJS used
+// JS_EVAL_FLAG_STRICT); guest code runs sloppy unless it declares
+// 'use strict' itself. Note kotlin.test.Ignore takes no message on
+// Kotlin/Native, so the reason lives in this comment.
+@Ignore
 class StrictModeTest {
   private val jsEngine = JsEngine.create()
 

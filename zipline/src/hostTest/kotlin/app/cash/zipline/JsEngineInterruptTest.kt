@@ -24,10 +24,11 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
-@Ignore(
-  "InterruptHandler is not wired for Hermes: QuickJS's per-instruction poll " +
-    "model has no equivalent; needs IHermes watchTimeLimit/asyncTriggerTimeout",
-)
+// Ignored: InterruptHandler is not wired for Hermes — QuickJS's
+// per-instruction poll model has no equivalent; needs IHermes
+// watchTimeLimit/asyncTriggerTimeout. Note kotlin.test.Ignore takes no
+// message on Kotlin/Native, so the reason lives in this comment.
+@Ignore
 class HermesInterruptTest {
   private val jsEngine = JsEngine.create()
 

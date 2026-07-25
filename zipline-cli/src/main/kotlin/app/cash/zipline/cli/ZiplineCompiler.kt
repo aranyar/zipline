@@ -17,7 +17,6 @@ package app.cash.zipline.cli
 
 import app.cash.zipline.JsEngine
 import app.cash.zipline.ZiplineManifest
-import app.cash.zipline.bytecode.stripLineNumbers
 import app.cash.zipline.loader.CURRENT_ZIPLINE_VERSION
 import app.cash.zipline.loader.ManifestSigner
 import app.cash.zipline.loader.ZiplineFile
@@ -112,9 +111,9 @@ internal class ZiplineCompiler(
       val sourceMap = if (jsSourceMapFile.exists()) jsSourceMapFile.readText() else null
       val bytecode = jsEngine.compile(jsFile.readText(), jsFile.name, sourceMap)
 
-//      if (stripLineNumbers) { // TODO: Do we need it?
-//        bytecode = stripLineNumbers(bytecode)
-//      }
+      // NOTE: stripLineNumbers is currently ignored — the QuickJS-era
+      // implementation operated on QuickJS bytecode and has no Hermes
+      // equivalent (the zipline-bytecode module was removed).
 
       val ziplineFile = ZiplineFile(CURRENT_ZIPLINE_VERSION, bytecode.toByteString())
       val sha256 = outputZiplineFile.sink().use { fileSink ->
