@@ -27,9 +27,9 @@ internal actual fun loadNativeLibrary() {
   val osArch = System.getProperty("os.arch").lowercase(US)
   // Combined Hermes + JNI glue library. On Android, Hermes's CMake produces
   // libhermesvm.so with our JNI glue merged in (via target_sources in
-  // hermes-jni-build/CMakeLists.txt). On macOS/Linux host, host-build.sh
-  // produces libhermesvm.dylib/so the same way. The JVM loads this single
-  // library; no separate libzipline_hermes_jni.so needed.
+  // hermes-jni-build/CMakeLists.txt). On macOS/Linux host, the Gradle
+  // buildHermesHost* tasks produce libhermesvm.dylib/so the same way.
+  // The JVM loads this single library; no separate libzipline_hermes_jni.so needed.
   val libName = when {
     osName.contains("linux") -> "libhermesvm.so"
     osName.contains("mac") -> "libhermesvm.dylib"

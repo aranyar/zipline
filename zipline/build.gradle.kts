@@ -10,6 +10,7 @@ import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTargetWithTests
 import org.jetbrains.kotlin.gradle.plugin.mpp.NativeBuildType
 import org.jetbrains.kotlin.gradle.plugin.mpp.TestExecutable
 import org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeTest
+import org.jetbrains.kotlin.konan.target.Architecture
 import org.jetbrains.kotlin.konan.target.Family
 import org.jetbrains.kotlin.konan.target.KonanTarget
 import org.gradle.api.publish.maven.MavenPublication
@@ -32,12 +33,13 @@ val copyTestingJs = tasks.register<Copy>("copyTestingJs") {
   from(rootDir.resolve("zipline-testing/build/compileSync/js/main/developmentLibrary/kotlin"))
 }
 
-// Hermes is built in two ways:
-//   1. For Android and host JVM: `buildHermesJni` runs `host-build.sh`.
-//   2. For iOS: the per-target Gradle tasks below run CMake and produce a
-//      single static archive `libhermesvm.a`. The archive is embedded in the
-//      iOS Kotlin/Native klib via cinterop staticLibraries, so consumers only
-//      need the Gradle dependency; no separate framework/dylib is required.
+// Hermes is built per platform, all via Gradle-driven CMake (no shell scripts):
+//   1. Android: AGP's externalNativeBuild (native/hermes-jni-build per ABI).
+//   2. Host JVM + Kotlin/Native macOS/Linux: the buildHermesHost* tasks below
+//      produce a per-arch libhermesvm.dylib/.so (dynamic, full non-lean VM).
+//   3. iOS: the buildHermesStatic* tasks produce a single static archive
+//      `libhermesvm.a`, embedded in the iOS Kotlin/Native klib via cinterop
+//      staticLibraries, so consumers only need the Gradle dependency.
 tasks.withType<KotlinNativeTest>().configureEach {
   dependsOn(":zipline-testing:compileDevelopmentLibraryKotlinJs")
 }
@@ -156,7 +158,7 @@ kotlin {
       // iOS uses a generated cinterop definition that embeds the static
       // Hermes+glue archive built by the per-target Gradle tasks below.
       // macOS/Linux keep using the checked-in def file plus dynamic lookup
-      // of the host dylib built by host-build.sh.
+      // of the host dylib built by the buildHermesHost* tasks below.
       val hermesDefFile = when (konanTarget.family) {
         Family.IOS -> {
           val defDir = layout.buildDirectory.dir("generated/cinterop").get().asFile
@@ -208,9 +210,16 @@ kotlin {
       // stay portable across machines), so the library search path is supplied
       // here for every native binary (test executables need it too). iOS has
       // the static archive embedded in its klib, so it does not need -L.
+      // macOS/Linux host targets link the per-arch dylib built by the
+      // buildHermesHost* tasks below.
       binaries.all {
         if (konanTarget.family != Family.IOS) {
-          linkerOpts += "-L${rootDir}/zipline/build/hermes-ios"
+          val hermesHostLibDir = when {
+            konanTarget.family == Family.LINUX -> "linux-x64"
+            konanTarget.architecture == Architecture.ARM64 -> "macos-arm64"
+            else -> "macos-x64"
+          }
+          linkerOpts += "-L${rootDir}/zipline/build/hermes-jni/$hermesHostLibDir"
         }
       }
 
@@ -261,10 +270,9 @@ buildConfig {
   }
 }
 
-// JsEngine is built externally (see zipline/host-build.sh for the host libs and
-// src/androidMain/CMakeLists.txt for the Android libs). The cklib block that
-// compiled QuickJS into a Kotlin/Native bitcode library is gone — Kotlin/Native
-// targets currently stub the engine (see nativeMain/JsEngine.kt).
+// JsEngine native libraries are built by Gradle-driven CMake (see the
+// buildHermes* tasks below for host/iOS and the android externalNativeBuild
+// block for Android).
 
 fun jsEngineVersion(): String {
   // The vendored JsEngine source is pinned by its git revision (see
@@ -295,22 +303,39 @@ val jsEngineRoot: File =
 val hermesImportCompilers =
   File(jsEngineRoot, "build_host_hermesc/ImportHostCompilers.cmake")
 
-// Helper: pick up JAVA_HOME from the environment, or fall back to
-// /usr/libexec/java_home on macOS. AGP's externalNativeBuild doesn't always
-// forward env vars to CMake, so we set JAVA_HOME on the relevant tasks.
-val javaHome: String? = System.getenv("JAVA_HOME")
-  ?: run {
-    val os = System.getProperty("os.name").lowercase()
-    if (os.contains("mac")) {
-      try {
-        val p = ProcessBuilder("/usr/libexec/java_home")
-          .redirectErrorStream(true).start()
-        if (p.waitFor(2, TimeUnit.SECONDS) && p.exitValue() == 0) {
-          p.inputStream.bufferedReader().readText().trim()
-        } else null
-      } catch (_: Exception) { null }
-    } else null
+// Helper: pick up JAVA_HOME from the environment if it has JNI headers
+// (the Gradle daemon's JBR does not), otherwise fall back to
+// /usr/libexec/java_home or any installed JDK on macOS. AGP's
+// externalNativeBuild doesn't always forward env vars to CMake, so we set
+// JAVA_HOME on the relevant tasks.
+val javaHome: String? = run {
+  fun hasJniHeaders(home: String?) = home != null && File(home, "include/jni.h").exists()
+
+  val fromEnv = System.getenv("JAVA_HOME")
+  if (hasJniHeaders(fromEnv)) {
+    fromEnv
+  } else {
+    val fromJavaHomeUtil = run {
+      val os = System.getProperty("os.name").lowercase()
+      if (os.contains("mac")) {
+        try {
+          val p = ProcessBuilder("/usr/libexec/java_home")
+            .redirectErrorStream(true).start()
+          if (p.waitFor(2, TimeUnit.SECONDS) && p.exitValue() == 0) {
+            p.inputStream.bufferedReader().readText().trim().takeIf { it.isNotEmpty() }
+          } else null
+        } catch (_: Exception) { null }
+      } else null
+    }
+    when {
+      hasJniHeaders(fromJavaHomeUtil) -> fromJavaHomeUtil
+      else -> File("/Library/Java/JavaVirtualMachines").listFiles()
+        ?.map { File(it, "Contents/Home") }
+        ?.firstOrNull { hasJniHeaders(it.path) }
+        ?.path
+    }
   }
+}
 
 val preBuildHermesHost: TaskProvider<Exec> =
   tasks.register<Exec>("preBuildHermesHost") {
@@ -336,22 +361,193 @@ val preBuildHermesHost: TaskProvider<Exec> =
     )
   }
 
-val buildHermesJni: TaskProvider<Exec> =
-  tasks.register<Exec>("buildHermesJni") {
-    description = "Build Hermes JNI libraries (full for host JVM, lean for Android)"
+// ---- Host (JVM + Kotlin/Native macOS/Linux) Hermes dylib builds ----------
+// The glue (native/hermes-jni-build/CMakeLists.txt) links a full, non-lean
+// Hermes into a single libhermesvm.dylib/.so. The shared Hermes build hides
+// compileJS() via -fvisibility=hidden, so the glue force-loads the static
+// archives (libhermesvm_a.a + libjsi.a + boost_context) instead; those are
+// produced once as universal (fat) macOS binaries by buildHermesMacosStatic.
+// One dylib per host arch: the JVM loads it from jar resources
+// (/jni/<arch>/libhermesvm.*, see jvmMain/JsNativeLoader.kt) and the
+// Kotlin/Native host targets link it via -L (see the binaries block above).
+
+val hermesMacosStaticDir = layout.buildDirectory.dir("hermes-macos-static")
+val cmakeBin = System.getenv("CMAKE_BIN") ?: "cmake"
+val hermesJobs = Runtime.getRuntime().availableProcessors().toString()
+
+val buildHermesMacosStatic: TaskProvider<Exec> =
+  tasks.register<Exec>("buildHermesMacosStatic") {
+    description = "Build universal static Hermes libs (force-loaded into the host dylib)"
     group = "build"
-    workingDir(rootProject.projectDir)
-    inputs.dir(File(rootProject.projectDir, "zipline/native/hermes-jni-build"))
-    outputs.dir(File(rootProject.projectDir, "zipline/src/jvmMain/resources/jni"))
-    outputs.dir(File(rootProject.projectDir, "zipline/src/androidMain/resources/jniLibs"))
-    val jobs = Runtime.getRuntime().availableProcessors().toString()
+    dependsOn(preBuildHermesHost)
+    inputs.dir(jsEngineRoot)
+    val staticDir = hermesMacosStaticDir.get().asFile
+    outputs.files(
+      File(staticDir, "lib/libhermesvm_a.a"),
+      File(staticDir, "jsi/libjsi.a"),
+      File(staticDir, "external/boost/boost_1_86_0/libs/context/libboost_context.a"),
+    )
     if (javaHome != null) {
-      val jh: Any = javaHome!!
-      environment("JAVA_HOME" to jh)
+      environment("JAVA_HOME" to javaHome!!)
     }
     commandLine(
-      "sh", "./zipline/host-build.sh"
+      "sh", "-c",
+      """
+      $cmakeBin -S '${jsEngineRoot.absolutePath}' -B '${staticDir.absolutePath}' -G Ninja \
+        -DCMAKE_BUILD_TYPE=MinSizeRel \
+        -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" \
+        -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15 \
+        -DHERMES_ENABLE_DEBUGGER=OFF \
+        -DHERMES_ENABLE_INTL=ON \
+        -DHERMES_ENABLE_TEST_SUITE=OFF \
+        -DHERMES_ENABLE_TOOLS=OFF \
+        -DHERMES_BUILD_SHARED_JSI=OFF \
+        -DHERMES_BUILD_APPLE_FRAMEWORK=OFF \
+        -DJSI_DIR='${jsEngineRoot.absolutePath}/API/jsi' \
+        -DIMPORT_HOST_COMPILERS='${hermesImportCompilers.absolutePath}'
+      $cmakeBin --build '${staticDir.absolutePath}' --target hermesvm jsi -j $hermesJobs
+      """.trimIndent()
     )
+  }
+
+// Build the glue dylib (full Hermes + JSI statically linked) for one macOS arch.
+fun registerBuildHermesHostMacos(arch: String): TaskProvider<Exec> {
+  val buildDir = layout.buildDirectory.dir("hermes-jni/macos-$arch").get().asFile
+  val dylib = File(buildDir, "libhermesvm.dylib")
+  return tasks.register<Exec>("buildHermesHostMacos${arch.replaceFirstChar { it.uppercase() }}") {
+    description = "Build host libhermesvm.dylib (macOS $arch)"
+    group = "build"
+    dependsOn(buildHermesMacosStatic)
+    inputs.dir(File(rootProject.projectDir, "zipline/native/hermes-jni-build"))
+    inputs.files(
+      file("native/hermes-core.cpp"),
+      file("native/hermes-core.h"),
+      file("native/hermes-ios/hermes-ios.cpp"),
+      file("native/hermes-ios/hermes-ios.h"),
+      file("native/ContextJni.cpp"),
+      file("native/ContextJni.h"),
+      file("native/ContextBase.cpp"),
+      file("native/InboundCallChannel.cpp"),
+      file("native/OutboundCallChannel.cpp"),
+      file("native/OutboundCallChannelJni.cpp"),
+      file("native/ExceptionThrowers.cpp"),
+      file("native/JniUtf8.h"),
+      file("native/common/JsIntrinsics.cpp"),
+    )
+    inputs.files(buildHermesMacosStatic.map { it.outputs.files })
+    outputs.file(dylib)
+    if (javaHome != null) {
+      environment("JAVA_HOME" to javaHome!!)
+    }
+    commandLine(
+      "sh", "-c",
+      """
+      $cmakeBin -S '${file("native/hermes-jni-build").absolutePath}' -B '${buildDir.absolutePath}' -G Ninja \
+        -DCMAKE_BUILD_TYPE=MinSizeRel \
+        -DCMAKE_OSX_ARCHITECTURES='$arch' \
+        -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15 \
+        -DHERMESVM_LEAN=OFF \
+        -DHERMES_SRC='${jsEngineRoot.absolutePath}' \
+        -DHERMES_STATIC_BUILD_DIR='${hermesMacosStaticDir.get().asFile.absolutePath}' \
+        -DIMPORT_HOST_COMPILERS='${hermesImportCompilers.absolutePath}' \
+        -DJAVA_HOME='${javaHome ?: ""}'
+      $cmakeBin --build '${buildDir.absolutePath}' --target hermesvm_jni -j $hermesJobs
+      """.trimIndent()
+    )
+  }
+}
+
+val buildHermesHostMacosArm64 = registerBuildHermesHostMacos("arm64")
+val buildHermesHostMacosX64 = registerBuildHermesHostMacos("x86_64")
+
+// Linux host .so, cross-compiled from macOS. Best-effort: skipped when no
+// Linux cross-toolchain is available (mirrors the old host-build.sh probe).
+val linuxToolchainFile = file("native/hermes-jni-build/x86_64-linux-gnu-cross.cmake")
+val linuxCrossToolchainAvailable: Boolean by lazy {
+  fun commandExists(cmd: String): Boolean = try {
+    ProcessBuilder("sh", "-c", "command -v $cmd >/dev/null 2>&1").start().waitFor() == 0
+  } catch (_: Exception) {
+    false
+  }
+  commandExists("x86_64-linux-gnu-gcc") ||
+    commandExists("x86_64-unknown-linux-gnu-gcc") ||
+    File("/opt/homebrew/Cellar/x86_64-unknown-linux-gnu").exists() ||
+    System.getenv("LINUX_SYSROOT") != null
+}
+
+val hermesLinuxStaticDir = layout.buildDirectory.dir("hermes-linux-static")
+
+val buildHermesLinuxStatic: TaskProvider<Exec> =
+  tasks.register<Exec>("buildHermesLinuxStatic") {
+    description = "Cross-build static Hermes libs for Linux x86_64 (skipped without cross-toolchain)"
+    group = "build"
+    onlyIf { linuxCrossToolchainAvailable }
+    dependsOn(preBuildHermesHost)
+    inputs.dir(jsEngineRoot)
+    inputs.file(linuxToolchainFile)
+    val staticDir = hermesLinuxStaticDir.get().asFile
+    outputs.files(
+      File(staticDir, "lib/libhermesvm_a.a"),
+      File(staticDir, "jsi/libjsi.a"),
+      File(staticDir, "external/boost/boost_1_86_0/libs/context/libboost_context.a"),
+    )
+    commandLine(
+      "sh", "-c",
+      """
+      $cmakeBin -S '${jsEngineRoot.absolutePath}' -B '${staticDir.absolutePath}' -G Ninja \
+        -DCMAKE_TOOLCHAIN_FILE='${linuxToolchainFile.absolutePath}' \
+        -DCMAKE_BUILD_TYPE=MinSizeRel \
+        -DHERMES_ENABLE_DEBUGGER=OFF \
+        -DHERMES_ENABLE_INTL=FALSE \
+        -DHERMES_UNICODE_LITE=TRUE \
+        -DHERMES_ENABLE_TEST_SUITE=OFF \
+        -DHERMES_ENABLE_TOOLS=OFF \
+        -DHERMES_BUILD_SHARED_JSI=OFF \
+        -DHERMES_BUILD_APPLE_FRAMEWORK=OFF \
+        -DJSI_DIR='${jsEngineRoot.absolutePath}/API/jsi' \
+        -DIMPORT_HOST_COMPILERS='${hermesImportCompilers.absolutePath}'
+      $cmakeBin --build '${staticDir.absolutePath}' --target hermesvm hermesvmlean jsi -j $hermesJobs
+      """.trimIndent()
+    )
+  }
+
+val buildHermesHostLinuxX64: TaskProvider<Exec> =
+  tasks.register<Exec>("buildHermesHostLinuxX64") {
+    description = "Cross-build host libhermesvm.so (Linux x86_64, skipped without cross-toolchain)"
+    group = "build"
+    onlyIf { linuxCrossToolchainAvailable }
+    dependsOn(buildHermesLinuxStatic)
+    inputs.dir(File(rootProject.projectDir, "zipline/native/hermes-jni-build"))
+    inputs.files(buildHermesLinuxStatic.map { it.outputs.files })
+    val buildDir = layout.buildDirectory.dir("hermes-jni/linux-x64").get().asFile
+    val so = File(buildDir, "libhermesvm.so")
+    outputs.file(so)
+    commandLine(
+      "sh", "-c",
+      """
+      $cmakeBin -S '${file("native/hermes-jni-build").absolutePath}' -B '${buildDir.absolutePath}' -G Ninja \
+        -DCMAKE_TOOLCHAIN_FILE='${linuxToolchainFile.absolutePath}' \
+        -DCMAKE_BUILD_TYPE=MinSizeRel \
+        -DHERMESVM_LEAN=OFF \
+        -DHERMES_SRC='${jsEngineRoot.absolutePath}' \
+        -DHERMES_STATIC_BUILD_DIR='${hermesLinuxStaticDir.get().asFile.absolutePath}' \
+        -DJAVA_HOME='${javaHome ?: ""}'
+      $cmakeBin --build '${buildDir.absolutePath}' --target hermesvm_jni -j $hermesJobs
+      """.trimIndent()
+    )
+  }
+
+// Stage the host dylibs into the JVM jar resources; JsNativeLoader extracts
+// and System.load()s them from /jni/<arch>/ at runtime.
+val stageHermesHostDylibs: TaskProvider<Sync> =
+  tasks.register<Sync>("stageHermesHostDylibs") {
+    description = "Stage host libhermesvm dylibs into jvmMain resources"
+    group = "build"
+    into(projectDir.resolve("src/jvmMain/resources/jni"))
+    from(buildHermesHostMacosArm64) { into("aarch64") }
+    from(buildHermesHostMacosX64) { into("x86_64") }
+    from(buildHermesHostLinuxX64) { into("amd64") }
+    outputs.dir(projectDir.resolve("src/jvmMain/resources/jni"))
   }
 
 // Build a merged static Hermes+Zipline archive for a single iOS variant.
@@ -453,17 +649,15 @@ listOf(
   }
 }
 
-// Host-side (JVM) and Android publications still depend on the host-build.sh
-// artifacts. iOS klibs pull in the static archive via the cinterop dependency
-// above; they no longer need the dylib staged by host-build.sh.
-
-// Also ensure Hermes JNI libs are built before JVM resource processing and jar tasks
+// The JVM jar ships the host dylibs as resources, so stage them before
+// resource processing, jar, and publication tasks. Android gets its .so
+// from AGP's externalNativeBuild; iOS klibs pull in the static archive via
+// the cinterop dependency above.
 tasks.matching { it.name == "jvmJar" || it.name == "jvmProcessResources" }
-  .configureEach { dependsOn(buildHermesJni) }
+  .configureEach { dependsOn(stageHermesHostDylibs) }
 
-// Ensure Hermes JNI libs are built before Android resource processing tasks
-tasks.matching { it.name.matches(Regex("process.*JavaRes")) }
-  .configureEach { dependsOn(buildHermesJni) }
+tasks.matching { it.name == "publishToMavenLocal" || it.name.startsWith("publish") }
+  .configureEach { dependsOn(stageHermesHostDylibs) }
 
 android {
   namespace = "app.cash.zipline"
