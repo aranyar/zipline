@@ -13,6 +13,7 @@ import org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeTest
 import org.jetbrains.kotlin.konan.target.Architecture
 import org.jetbrains.kotlin.konan.target.Family
 import org.jetbrains.kotlin.konan.target.KonanTarget
+import org.gradle.api.file.FileTree
 import org.gradle.api.publish.maven.MavenPublication
 
 plugins {
@@ -375,6 +376,19 @@ val hermesMacosStaticDir = layout.buildDirectory.dir("hermes-macos-static")
 val cmakeBin = System.getenv("CMAKE_BIN") ?: "cmake"
 val hermesJobs = Runtime.getRuntime().availableProcessors().toString()
 
+// Input tracking for the native build tasks below. Kept as trees so new glue
+// files are picked up automatically and the lists can't drift from CMake's
+// GLUE_*_SOURCES. Build output dirs (and the vendored Hermes tree, tracked
+// separately via jsEngineRoot where needed) are excluded.
+val hermesGlueInputFiles: FileTree = fileTree(File(rootProject.projectDir, "zipline/native")) {
+  include("*.cpp", "*.h")
+  exclude("hermes/**", "hermes-jni-build/**", "mimalloc/**", "include/**")
+}
+val hermesCmakeInputFiles: FileTree =
+  fileTree(File(rootProject.projectDir, "zipline/native/hermes-jni-build")) {
+    exclude("build*/**")
+  }
+
 val buildHermesMacosStatic: TaskProvider<Exec> =
   tasks.register<Exec>("buildHermesMacosStatic") {
     description = "Build universal static Hermes libs (force-loaded into the host dylib)"
@@ -418,22 +432,8 @@ fun registerBuildHermesHostMacos(arch: String): TaskProvider<Exec> {
     description = "Build host libhermesvm.dylib (macOS $arch)"
     group = "build"
     dependsOn(buildHermesMacosStatic)
-    inputs.dir(File(rootProject.projectDir, "zipline/native/hermes-jni-build"))
-    inputs.files(
-      file("native/hermes-core.cpp"),
-      file("native/hermes-core.h"),
-      file("native/hermes-ios/hermes-ios.cpp"),
-      file("native/hermes-ios/hermes-ios.h"),
-      file("native/ContextJni.cpp"),
-      file("native/ContextJni.h"),
-      file("native/ContextBase.cpp"),
-      file("native/InboundCallChannel.cpp"),
-      file("native/OutboundCallChannel.cpp"),
-      file("native/OutboundCallChannelJni.cpp"),
-      file("native/ExceptionThrowers.cpp"),
-      file("native/JniUtf8.h"),
-      file("native/common/JsIntrinsics.cpp"),
-    )
+    inputs.files(hermesGlueInputFiles)
+    inputs.files(hermesCmakeInputFiles)
     inputs.files(buildHermesMacosStatic.map { it.outputs.files })
     outputs.file(dylib)
     if (javaHome != null) {
@@ -517,7 +517,8 @@ val buildHermesHostLinuxX64: TaskProvider<Exec> =
     group = "build"
     onlyIf { linuxCrossToolchainAvailable }
     dependsOn(buildHermesLinuxStatic)
-    inputs.dir(File(rootProject.projectDir, "zipline/native/hermes-jni-build"))
+    inputs.files(hermesGlueInputFiles)
+    inputs.files(hermesCmakeInputFiles)
     inputs.files(buildHermesLinuxStatic.map { it.outputs.files })
     val buildDir = layout.buildDirectory.dir("hermes-jni/linux-x64").get().asFile
     val so = File(buildDir, "libhermesvm.so")
@@ -560,24 +561,14 @@ fun registerBuildHermesStaticIos(
   val lowerName = konanTarget.name
   val buildDir = layout.buildDirectory.dir("hermes-static/$lowerName/cmake").get().asFile
   val outputFile = File(buildDir, "libhermesvm.a")
-  val inputFiles = listOf(
-    file("native/hermes-core.cpp"),
-    file("native/hermes-core.h"),
-    file("native/hermes-ios/hermes-ios.cpp"),
-    file("native/hermes-ios/hermes-ios.h"),
-    file("native/ContextNative.cpp"),
-    file("native/ContextNative.h"),
-    file("native/ContextBase.cpp"),
-    file("native/common/JsIntrinsics.cpp"),
-    file("native/hermes-jni-build/CMakeLists.txt"),
-    file("native/hermes-ios.exports"),
-  )
   return tasks.register<Exec>("buildHermesStatic${lowerName.replaceUnderscoreCamelCase()}") {
     description = "Build static Hermes archive for ${konanTarget.name}"
     group = "build"
     dependsOn(preBuildHermesHost)
     inputs.dir(jsEngineRoot)
-    inputFiles.forEach { inputs.file(it) }
+    inputs.files(hermesGlueInputFiles)
+    inputs.files(hermesCmakeInputFiles)
+    inputs.file(file("native/hermes-ios.exports"))
     outputs.file(outputFile)
     val cmakeBin = System.getenv("CMAKE_BIN") ?: "cmake"
     val jobs = Runtime.getRuntime().availableProcessors().toString()

@@ -69,16 +69,28 @@ set(HERMESVM_LEAN OFF CACHE BOOL "Build lean Hermes without the JS compiler")
 # dynamic hermesvm.framework.
 set(HERMES_IOS_STATIC OFF CACHE BOOL "Build iOS as a merged static archive")
 
-# Core glue source files (shared across all platforms, but NOT JNI-specific).
-# These are used for macOS host builds.
-set(GLUE_CORE_SOURCES
+# Glue sources shared by all platforms (engine facade, base context,
+# intrinsics). Platform lists below extend this; do not duplicate entries.
+set(GLUE_COMMON_SOURCES
   ${HERMES_SRC}/../hermes-core.cpp
   ${HERMES_SRC}/../hermes-ios/hermes-ios.cpp
+  ${HERMES_SRC}/../ContextBase.cpp
+  ${HERMES_SRC}/../common/JsIntrinsics.cpp
+)
+
+# CompileJS.cpp provides hermes::compileJS() for on-device JS compilation.
+# Exclude it when building lean (compile() won't be available).
+if(NOT HERMESVM_LEAN)
+  list(APPEND GLUE_COMMON_SOURCES ${HERMES_SRC}/API/hermes/CompileJS.cpp)
+endif()
+
+# Core glue source files (shared across JNI platforms, but NOT JNI-specific).
+# These are used for macOS host builds.
+set(GLUE_CORE_SOURCES
+  ${GLUE_COMMON_SOURCES}
   ${HERMES_SRC}/../InboundCallChannel.cpp
   ${HERMES_SRC}/../OutboundCallChannel.cpp
-  ${HERMES_SRC}/../ContextBase.cpp
   ${HERMES_SRC}/../ExceptionThrowers.cpp
-  ${HERMES_SRC}/../common/JsIntrinsics.cpp
 )
 
 # JNI-specific glue source files (Android only - not needed for iOS/macOS).
@@ -91,20 +103,10 @@ set(GLUE_JNI_SOURCES
 
 # iOS-specific glue source files (no JNI dependencies).
 set(GLUE_IOS_SOURCES
-  ${HERMES_SRC}/../hermes-core.cpp
-  ${HERMES_SRC}/../hermes-ios/hermes-ios.cpp
+  ${GLUE_COMMON_SOURCES}
   ${HERMES_SRC}/../ContextNative.cpp
   ${HERMES_SRC}/../ContextNative.h
-  ${HERMES_SRC}/../ContextBase.cpp
-  ${HERMES_SRC}/../common/JsIntrinsics.cpp
 )
-
-# CompileJS.cpp provides hermes::compileJS() for on-device JS compilation.
-# Exclude it when building lean (compile() won't be available).
-if(NOT HERMESVM_LEAN)
-  list(APPEND GLUE_CORE_SOURCES ${HERMES_SRC}/API/hermes/CompileJS.cpp)
-  list(APPEND GLUE_IOS_SOURCES ${HERMES_SRC}/API/hermes/CompileJS.cpp)
-endif()
 
 # Base include dirs for glue sources.
 set(_GLUE_INCLUDES
