@@ -56,6 +56,9 @@ allprojects {
   repositories {
     mavenCentral()
     google()
+    // Hosts io.github.tret9:* forks (e.g. the JS-optimized androidx.collection
+    // used by :intrinsic-tests).
+    maven("https://nexus-hosted.wb.ru/repository/compose-live-maven2-release-public/")
   }
 
   apply(plugin = "com.diffplug.spotless")

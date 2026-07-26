@@ -185,12 +185,54 @@ static bool load_metadata_group(jsi::Runtime& rt, const jsi::Value& meta, int32_
 }
 
 // Write metadata byte to an array-like value.
-// For JSI, we can't write raw bytes directly, so we need to reconstruct
-// the containing int32_t value and write it back.
-// For simplicity, we'll skip this for now and use a different approach:
-// mark changes via a separate data structure if needed.
-// For the Kotlin/JS IntSet implementation, metadata changes are infrequent
-// (only on insert/remove), so we can use a different strategy.
+// JSI has no raw ArrayBuffer access, so read-modify-write the containing
+// int32 element via indexed properties (little-endian byte order, matching
+// load_metadata_group).
+static bool write_metadata_byte(jsi::Runtime& rt, const jsi::Value& meta, int32_t offset, uint8_t byte) {
+  if (!meta.isObject()) return false;
+  jsi::Object obj = meta.asObject(rt);
+  int32_t idx = offset >> 2;
+  uint32_t shift = static_cast<uint32_t>(offset & 3) << 3;
+  jsi::Value val = obj.getProperty(rt, idx);
+  if (!val.isNumber()) return false;
+  uint32_t word = static_cast<uint32_t>(static_cast<int32_t>(val.asNumber()));
+  word = (word & ~(0xFFu << shift)) | (static_cast<uint32_t>(byte) << shift);
+  obj.setProperty(rt, idx, jsi::Value(static_cast<int32_t>(word)));
+  return true;
+}
+
+// Write a single int32 element into an array-like value (out params).
+static bool write_int_element(jsi::Runtime& rt, const jsi::Value& arr, int32_t index, int32_t value) {
+  if (!arr.isObject()) return false;
+  arr.asObject(rt).setProperty(rt, index, jsi::Value(value));
+  return true;
+}
+
+// Probe for the first Empty or Deleted slot from hash1, mirroring the
+// QuickJS find_first_available_slot. Returns -1 only on metadata read errors
+// (callers convert that to a JSError).
+static int32_t find_first_available_slot(jsi::Runtime& rt, const jsi::Value& meta,
+                                         int32_t capacity, int32_t hash1, bool* ok) {
+  int32_t mask = capacity;
+  int32_t probeOffset = hash1 & mask;
+  int32_t probeIndex = 0;
+  while (1) {
+    uint64_t g;
+    if (!load_metadata_group(rt, meta, probeOffset, &g)) {
+      *ok = false;
+      return -1;
+    }
+    uint64_t m = mask_empty_or_deleted(g);
+    if (m != 0) {
+      int32_t bitIdx = __builtin_ctzll(m);
+      int32_t byteInGroup = bitIdx >> 3;
+      *ok = true;
+      return (probeOffset + byteInGroup) & mask;
+    }
+    probeIndex += 8;
+    probeOffset = (probeOffset + probeIndex) & mask;
+  }
+}
 
 static jsi::Value c_intset_find(jsi::Runtime& rt, const jsi::Value& this_val,
                                    const jsi::Value* args, size_t argc) {
@@ -278,9 +320,12 @@ static jsi::Value c_intset_find_slot(jsi::Runtime& rt, const jsi::Value& this_va
     probeOffset = (probeOffset + probeIndex) & mask;
   }
 
-  // Find first available slot (write to out param)
-  // For JSI, we'd need to write back to args[6] but that's an object with a value property
-  // For simplicity, return -1 and let Kotlin handle it
+  // Not found: report the first available slot via the out param.
+  bool ok = false;
+  int32_t slot = find_first_available_slot(rt, args[0], capacity, ((uint32_t)hash >> 7) & mask, &ok);
+  if (!ok || !write_int_element(rt, args[6], 0, slot)) {
+    throw jsi::JSError(rt, "Failed to write emptySlot out param");
+  }
   return jsi::Value(-1);
 }
 
@@ -315,7 +360,10 @@ static jsi::Value c_intset_remove(jsi::Runtime& rt, const jsi::Value& this_val,
       }
       int32_t slotInt = static_cast<int32_t>(slotVal.asNumber());
       if (slotInt == element) {
-        // Mark as deleted and clear the element
+        // Tombstone the slot in metadata, then clear the element.
+        if (!write_metadata_byte(rt, args[0], index, META_DELETED)) {
+          throw jsi::JSError(rt, "Failed to write metadata");
+        }
         args[1].asObject(rt).setProperty(rt, index, jsi::Value::null());
         return jsi::Value(index);
       }
@@ -456,6 +504,12 @@ static jsi::Value c_scatterset_find_slot(jsi::Runtime& rt, const jsi::Value& thi
     probeIndex += 8;
     probeOffset = (probeOffset + probeIndex) & mask;
   }
+  // Not found: report the first available slot via the out param.
+  bool ok = false;
+  int32_t slot = find_first_available_slot(rt, args[0], capacity, ((uint32_t)hash >> 7) & mask, &ok);
+  if (!ok || !write_int_element(rt, args[6], 0, slot)) {
+    throw jsi::JSError(rt, "Failed to write emptySlot out param");
+  }
   return jsi::Value(-1);
 }
 
@@ -490,7 +544,11 @@ static jsi::Value c_scatterset_remove(jsi::Runtime& rt, const jsi::Value& this_v
         throw jsi::JSError(rt, "equals() threw");
       }
       if (eq) {
-        // Mark as Deleted and clear the element to null (not undefined)
+        // Tombstone the slot in metadata, then clear the element to null
+        // (not undefined).
+        if (!write_metadata_byte(rt, args[0], index, META_DELETED)) {
+          throw jsi::JSError(rt, "Failed to write metadata");
+        }
         args[1].asObject(rt).setProperty(rt, index, jsi::Value::null());
         return jsi::Value(index);
       }
@@ -543,6 +601,12 @@ static jsi::Value c_scattermap_find_slot(jsi::Runtime& rt, const jsi::Value& thi
     }
     probeIndex += 8;
     probeOffset = (probeOffset + probeIndex) & mask;
+  }
+  // Not found: report the first available slot via the out param.
+  bool ok = false;
+  int32_t slot = find_first_available_slot(rt, args[0], capacity, ((uint32_t)hash >> 7) & mask, &ok);
+  if (!ok || !write_int_element(rt, args[6], 0, slot)) {
+    throw jsi::JSError(rt, "Failed to write emptySlot out param");
   }
   return jsi::Value(-1);
 }
@@ -622,6 +686,9 @@ static jsi::Value c_scattermap_remove(jsi::Runtime& rt, const jsi::Value& this_v
         throw jsi::JSError(rt, "equals() threw");
       }
       if (eq) {
+        if (!write_metadata_byte(rt, args[0], index, META_DELETED)) {
+          throw jsi::JSError(rt, "Failed to write metadata");
+        }
         args[1].asObject(rt).setProperty(rt, index, jsi::Value::null());
         args[2].asObject(rt).setProperty(rt, index, jsi::Value::null());
         return jsi::Value(index);
@@ -724,6 +791,12 @@ static jsi::Value c_int_object_map_find_slot(jsi::Runtime& rt, const jsi::Value&
     probeIndex += 8;
     probeOffset = (probeOffset + probeIndex) & mask;
   }
+  // Not found: report the first available slot via the out param.
+  bool ok = false;
+  int32_t slot = find_first_available_slot(rt, args[0], capacity, ((uint32_t)hash >> 7) & mask, &ok);
+  if (!ok || !write_int_element(rt, args[6], 0, slot)) {
+    throw jsi::JSError(rt, "Failed to write emptySlot out param");
+  }
   return jsi::Value(-1);
 }
 
@@ -759,6 +832,10 @@ static jsi::Value c_int_object_map_put(jsi::Runtime& rt, const jsi::Value& this_
       int32_t slotKey = static_cast<int32_t>(slotVal.asNumber());
       if (slotKey == key) {
         // Found existing key, no creation needed
+        if (!write_int_element(rt, args[6], 0, 0) ||
+            !write_int_element(rt, args[7], 0, 0)) {
+          throw jsi::JSError(rt, "Failed to write out params");
+        }
         return jsi::Value(index);
       }
       m &= m - 1;
@@ -768,8 +845,14 @@ static jsi::Value c_int_object_map_put(jsi::Runtime& rt, const jsi::Value& this_
       int32_t bitIdx = __builtin_ctzll(mask_empty(g));
       int32_t byteInGroup = bitIdx >> 3;
       int32_t index = (probeOffset + byteInGroup) & mask;
+      if (!write_metadata_byte(rt, args[0], index, static_cast<uint8_t>(hash2))) {
+        throw jsi::JSError(rt, "Failed to write metadata");
+      }
       args[1].asObject(rt).setProperty(rt, index, jsi::Value(key));
-      // outCreated = 1, outSizeDelta = 1 (would need to write to out params)
+      if (!write_int_element(rt, args[6], 0, 1) ||
+          !write_int_element(rt, args[7], 0, 1)) {
+        throw jsi::JSError(rt, "Failed to write out params");
+      }
       return jsi::Value(index);
     }
     probeIndex += 8;
@@ -808,6 +891,9 @@ static jsi::Value c_int_object_map_remove(jsi::Runtime& rt, const jsi::Value& th
       }
       int32_t slotKey = static_cast<int32_t>(slotVal.asNumber());
       if (slotKey == key) {
+        if (!write_metadata_byte(rt, args[0], index, META_DELETED)) {
+          throw jsi::JSError(rt, "Failed to write metadata");
+        }
         args[1].asObject(rt).setProperty(rt, index, jsi::Value::null());
         return jsi::Value(index);
       }
