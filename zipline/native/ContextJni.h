@@ -1,7 +1,6 @@
 #ifndef ZIPLINE_CONTEXT_JNI_H
 #define ZIPLINE_CONTEXT_JNI_H
 
-#include "ContextBase.h"
 #include "RdmaChange.h"
 #include "hermes-core.h"
 
@@ -19,7 +18,6 @@ class ContextJni : public ContextBase {
   explicit ContextJni(JNIEnv* env);
   ~ContextJni() override;
 
-  jsi::Runtime& getRuntime() override { return *runtime; }
   jsi::String toJsString(const std::string& str) override;
   std::string toCppString(const jsi::String& str) override;
   void throwJsException(const std::string& message) override;
@@ -58,12 +56,6 @@ class ContextJni : public ContextBase {
   // Cached JNI references used by throwers and the value converter.
   JavaVM* javaVm;
   const jint jniVersion;
-
-  // The JSI runtime, owned by `core` (shared with the hermes-core C API so
-  // the duplicated engine glue can delegate to HermesCore_* functions).
-  // `runtime` is a raw pointer bound to core.runtime's lifetime.
-  HermesCoreContext core;
-  facebook::jsi::Runtime* runtime;
 
   // Hermes runtime configuration snapshot (shared Zipline defaults from
   // HermesCore_makeRuntimeConfig) — memoryUsage() reports its heap sizes.

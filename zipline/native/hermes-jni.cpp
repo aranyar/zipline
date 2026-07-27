@@ -189,7 +189,7 @@ Java_app_cash_zipline_JsEngine_getGlobalProperty(JNIEnv* env, jobject /*thiz*/,
   std::string propName = jstringToCppString(env, name);
   char* value = nullptr;
   char* error = nullptr;
-  if (!HermesCore_getGlobalProperty(&ctx->core, propName.c_str(), &value, &error)) {
+  if (!HermesCore_getGlobalProperty(ctx, propName.c_str(), &value, &error)) {
     // Not present or not a string (previous behavior), or an engine error.
     if (error) {
       throwJavaException(env, "java/lang/IllegalStateException", "%s", error);
@@ -215,7 +215,7 @@ Java_app_cash_zipline_JsEngine_setGlobalProperty(JNIEnv* env, jobject /*thiz*/,
   std::string propName = jstringToCppString(env, name);
   std::string propValue = jstringToCppString(env, value);
   char* error = nullptr;
-  if (!HermesCore_setGlobalProperty(&ctx->core, propName.c_str(), propValue.c_str(), &error)) {
+  if (!HermesCore_setGlobalProperty(ctx, propName.c_str(), propValue.c_str(), &error)) {
     throwJavaException(env, "java/lang/IllegalStateException", "%s",
                        error ? error : "setGlobalProperty failed");
     free(error);
@@ -233,7 +233,7 @@ Java_app_cash_zipline_JsEngine_deleteGlobalProperty(JNIEnv* env, jobject /*thiz*
   }
   std::string propName = jstringToCppString(env, name);
   char* error = nullptr;
-  if (!HermesCore_deleteGlobalProperty(&ctx->core, propName.c_str(), &error)) {
+  if (!HermesCore_deleteGlobalProperty(ctx, propName.c_str(), &error)) {
     throwJavaException(env, "java/lang/IllegalStateException", "%s",
                        error ? error : "deleteGlobalProperty failed");
     free(error);
@@ -253,7 +253,7 @@ Java_app_cash_zipline_JsEngine_callGlobalMethod(JNIEnv* env, jobject /*thiz*/,
   std::string objName = jstringToCppString(env, objectName);
   std::string mtdName = jstringToCppString(env, methodName);
   char* error = nullptr;
-  if (!HermesCore_callGlobalMethod(&ctx->core, objName.c_str(), mtdName.c_str(), &error)) {
+  if (!HermesCore_callGlobalMethod(ctx, objName.c_str(), mtdName.c_str(), &error)) {
     throwJavaException(env, "java/lang/IllegalStateException", "%s",
                        error ? error : "callGlobalMethod failed");
     free(error);
@@ -275,7 +275,7 @@ Java_app_cash_zipline_JsEngine_callGlobalFunctionWithStringArg(JNIEnv* env, jobj
   char* resultOut = nullptr;
   char* error = nullptr;
   if (!HermesCore_callGlobalFunctionWithStringArg(
-          &ctx->core, fnName.c_str(), argStr.c_str(), &resultOut, &error)) {
+          ctx, fnName.c_str(), argStr.c_str(), &resultOut, &error)) {
     throwJavaException(env, "java/lang/IllegalStateException", "%s",
                        error ? error : "callGlobalFunctionWithStringArg failed");
     free(error);
@@ -299,7 +299,7 @@ Java_app_cash_zipline_JsEngine_callRequireMethod(JNIEnv* env, jobject /*thiz*/,
   std::string modId = jstringToCppString(env, moduleId);
   std::string mtdName = jstringToCppString(env, methodName);
   char* error = nullptr;
-  if (!HermesCore_callRequireMethod(&ctx->core, modId.c_str(), mtdName.c_str(), &error)) {
+  if (!HermesCore_callRequireMethod(ctx, modId.c_str(), mtdName.c_str(), &error)) {
     throwJavaException(env, "java/lang/IllegalStateException", "%s",
                        error ? error : "callRequireMethod failed");
     free(error);
@@ -316,7 +316,7 @@ Java_app_cash_zipline_JsEngine_installModuleLoader(JNIEnv* env, jobject /*thiz*/
     return;
   }
   char* error = nullptr;
-  if (!HermesCore_installModuleLoader(&ctx->core, &error)) {
+  if (!HermesCore_installModuleLoader(ctx, &error)) {
     throwJavaException(env, "java/lang/IllegalStateException", "%s",
                        error ? error : "installModuleLoader failed");
     free(error);

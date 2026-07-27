@@ -16,7 +16,7 @@
 #include <jsi/instrumentation.h>
 #include <jsi/jsi.h>
 
-#include "ContextBase.h"
+#include "hermes-core.h"
 #include "ExceptionThrowers.h"
 #include "InboundCallChannel.h"
 #include "OutboundCallChannelJni.h"
@@ -116,13 +116,12 @@ ContextJni::ContextJni(JNIEnv* env)
                        "Cannot create HermesRuntime");
     throw std::runtime_error("makeHermesRuntime returned null");
   }
-  core.runtime = std::move(hermesRuntime);
-  runtime = core.runtime.get();
+  runtime = std::move(hermesRuntime);
 
   // Register JS intrinsics (IntSet/ScatterSet/ScatterMap/etc.) that back the
   // kotlinx.collections fast paths in Kotlin/JS. These are called from
   // generated Kotlin/JS code via _intsetFind, _scatterSetFind, etc.
-  js_register_intrinsics(runtime);
+  js_register_intrinsics(runtime.get());
 
   // Install a global `gc()` helper mirroring the QuickJS `JS_AddGlobalThisGc`
   // shim. Hermes has no built-in JS-visible `gc` function in the runtime, so
@@ -154,7 +153,6 @@ ContextJni::~ContextJni() {
     if (booleanClass) env->DeleteGlobalRef(booleanClass);
     if (pendingJavaException) env->DeleteGlobalRef(pendingJavaException);
   }
-  // core (owning the runtime) is destroyed automatically after the body.
 }
 
 jobject ContextJni::execute(JNIEnv* env, jbyteArray byteCode, jstring fileName) {
@@ -167,7 +165,7 @@ jobject ContextJni::execute(JNIEnv* env, jbyteArray byteCode, jstring fileName) 
 
   jsi::Value result;
   try {
-    result = HermesCore_evaluateBytecode(&core, buf.data(), buf.size(), fileNameStr);
+    result = HermesCore_evaluateBytecode(this, buf.data(), buf.size(), fileNameStr);
   } catch (const jsi::JSError& e) {
     #ifdef __ANDROID__
     __android_log_print(ANDROID_LOG_ERROR, "JSI", "execute: JSError: %s", e.getMessage().c_str());
@@ -199,7 +197,7 @@ jbyteArray ContextJni::compile(JNIEnv* env, jstring source, jstring file,
   size_t bytecodeSize = 0;
   char* error = nullptr;
   int ok = HermesCore_compile(
-      &core,
+      this,
       src.c_str(),
       filename.c_str(),
       sourceMap != nullptr ? sourceMapStr.c_str() : nullptr,
@@ -264,7 +262,7 @@ jobject ContextJni::memoryUsage(JNIEnv* env) {
 }
 
 void ContextJni::gc(JNIEnv* /*env*/) {
-  HermesCore_gc(&core);
+  HermesCore_gc(this);
 }
 
 InboundCallChannel* ContextJni::getInboundCallChannel(JNIEnv* env, jstring name) {

@@ -11,27 +11,14 @@
 #include <hermes/Public/GCConfig.h>
 #include <hermes/Public/RuntimeConfig.h>
 
+#include "ContextBase.h"
+
 #include <memory>
 #include <string>
 
-// The core context. Platform layers may inherit from this struct to attach
-// their own per-runtime state (see hermes-ios.cpp); such layers must use
-// HermesCore_initContext/HermesCore_releaseContext instead of
-// createContext/destroyContext so the derived object is allocated and
-// deleted with its own type.
-//
-// TODO: this header currently leaks Hermes C++ implementation details
-// (<hermes/hermes.h>, std::unique_ptr member) into every consumer. If the
-// consumer list grows beyond the two engine glue .cpps, hide the members
-// behind a pimpl or a forward-declared base with a virtual destructor.
-struct HermesCoreContext {
-  std::unique_ptr<facebook::hermes::HermesRuntime> runtime;
-  std::string lastError;
-};
-
 // Initialize/release a caller-allocated context (returns 1 on success).
-int HermesCore_initContext(HermesCoreContext* ctx);
-void HermesCore_releaseContext(HermesCoreContext* ctx);
+int HermesCore_initContext(ContextBase* ctx);
+void HermesCore_releaseContext(ContextBase* ctx);
 
 // The single source of the Zipline runtime configuration: hardened Hermes
 // config with ES6Proxy re-enabled (Kotlin/JS stdlib needs Reflect.construct)
@@ -45,7 +32,7 @@ hermes::vm::GCConfig HermesCore_makeGCConfig();
 
 // Evaluate precompiled Hermes bytecode and return the result value.
 // Throws jsi::JSError on script errors, std::exception on engine errors.
-facebook::jsi::Value HermesCore_evaluateBytecode(HermesCoreContext* ctx,
+facebook::jsi::Value HermesCore_evaluateBytecode(ContextBase* ctx,
                                                  const uint8_t* bytecode,
                                                  size_t bytecodeSize,
                                                  const std::string& sourceURL);

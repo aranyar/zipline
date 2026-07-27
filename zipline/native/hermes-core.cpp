@@ -34,7 +34,7 @@ hermes::vm::RuntimeConfig HermesCore_makeRuntimeConfig() {
       .build();
 }
 
-int HermesCore_initContext(HermesCoreContext* ctx) {
+int HermesCore_initContext(ContextBase* ctx) {
   auto runtime = facebook::hermes::makeHermesRuntime(HermesCore_makeRuntimeConfig());
   if (!runtime) {
     return 0;
@@ -43,13 +43,13 @@ int HermesCore_initContext(HermesCoreContext* ctx) {
   return 1;
 }
 
-void HermesCore_releaseContext(HermesCoreContext* ctx) {
+void HermesCore_releaseContext(ContextBase* ctx) {
   if (ctx) {
     ctx->runtime.reset();
   }
 }
 
-jsi::Value HermesCore_evaluateBytecode(HermesCoreContext* ctx,
+jsi::Value HermesCore_evaluateBytecode(ContextBase* ctx,
                                        const uint8_t* bytecode,
                                        size_t bytecodeSize,
                                        const std::string& sourceURL) {
@@ -74,7 +74,7 @@ jsi::Value HermesCore_evaluateBytecode(HermesCoreContext* ctx,
 extern "C" {
 
 void* HermesCore_createContext(void* jniEnv) {
-  HermesCoreContext* ctx = new HermesCoreContext();
+  ContextBase* ctx = new ContextBase();
   if (!HermesCore_initContext(ctx)) {
     delete ctx;
     return nullptr;
@@ -84,19 +84,19 @@ void* HermesCore_createContext(void* jniEnv) {
 
 void HermesCore_destroyContext(void* context) {
   if (context) {
-    HermesCoreContext* ctx = static_cast<HermesCoreContext*>(context);
+    ContextBase* ctx = static_cast<ContextBase*>(context);
     delete ctx;
   }
 }
 
 void* HermesCore_getRuntime(void* context) {
   if (!context) return nullptr;
-  HermesCoreContext* ctx = static_cast<HermesCoreContext*>(context);
+  ContextBase* ctx = static_cast<ContextBase*>(context);
   return ctx->runtime.get();
 }
 
 int HermesCore_execute(void* context, const uint8_t* bytecode, size_t bytecodeSize, const char* sourceURL, char** errorOut) {
-  HermesCoreContext* ctx = static_cast<HermesCoreContext*>(context);
+  ContextBase* ctx = static_cast<ContextBase*>(context);
   if (!ctx || !ctx->runtime) {
     if (errorOut) *errorOut = strdup("Invalid context");
     return 0;
@@ -127,7 +127,7 @@ int HermesCore_compile(void* context,
   if (errorOut) *errorOut = strdup("compile() is not available in lean Hermes build");
   return 0;
 #else
-  HermesCoreContext* ctx = static_cast<HermesCoreContext*>(context);
+  ContextBase* ctx = static_cast<ContextBase*>(context);
   if (!ctx) {
     if (errorOut) *errorOut = strdup("Invalid context");
     return 0;
@@ -172,7 +172,7 @@ int HermesCore_compile(void* context,
 }
 
 int HermesCore_evaluate(void* context, const char* code, size_t codeSize, const char* sourceURL, char** errorOut) {
-  HermesCoreContext* ctx = static_cast<HermesCoreContext*>(context);
+  ContextBase* ctx = static_cast<ContextBase*>(context);
   if (!ctx || !ctx->runtime) {
     if (errorOut) *errorOut = strdup("Invalid context");
     return 0;
@@ -194,7 +194,7 @@ int HermesCore_evaluate(void* context, const char* code, size_t codeSize, const 
 }
 
 int HermesCore_getGlobalProperty(void* context, const char* name, char** valueOut, char** errorOut) {
-  HermesCoreContext* ctx = static_cast<HermesCoreContext*>(context);
+  ContextBase* ctx = static_cast<ContextBase*>(context);
   if (!ctx || !ctx->runtime) {
     if (errorOut) *errorOut = strdup("Invalid context");
     return 0;
@@ -217,7 +217,7 @@ int HermesCore_getGlobalProperty(void* context, const char* name, char** valueOu
 }
 
 int HermesCore_setGlobalProperty(void* context, const char* name, const char* value, char** errorOut) {
-  HermesCoreContext* ctx = static_cast<HermesCoreContext*>(context);
+  ContextBase* ctx = static_cast<ContextBase*>(context);
   if (!ctx || !ctx->runtime) {
     if (errorOut) *errorOut = strdup("Invalid context");
     return 0;
@@ -236,7 +236,7 @@ int HermesCore_setGlobalProperty(void* context, const char* name, const char* va
 }
 
 int HermesCore_deleteGlobalProperty(void* context, const char* name, char** errorOut) {
-  HermesCoreContext* ctx = static_cast<HermesCoreContext*>(context);
+  ContextBase* ctx = static_cast<ContextBase*>(context);
   if (!ctx || !ctx->runtime) {
     if (errorOut) *errorOut = strdup("Invalid context");
     return 0;
@@ -254,7 +254,7 @@ int HermesCore_deleteGlobalProperty(void* context, const char* name, char** erro
 }
 
 int HermesCore_callGlobalMethod(void* context, const char* objectName, const char* methodName, char** errorOut) {
-  HermesCoreContext* ctx = static_cast<HermesCoreContext*>(context);
+  ContextBase* ctx = static_cast<ContextBase*>(context);
   if (!ctx || !ctx->runtime) {
     if (errorOut) *errorOut = strdup("Invalid context");
     return 0;
@@ -299,7 +299,7 @@ int HermesCore_callGlobalMethod(void* context, const char* objectName, const cha
 }
 
 int HermesCore_callGlobalFunctionWithStringArg(void* context, const char* functionName, const char* arg, char** resultOut, char** errorOut) {
-  HermesCoreContext* ctx = static_cast<HermesCoreContext*>(context);
+  ContextBase* ctx = static_cast<ContextBase*>(context);
   if (!ctx || !ctx->runtime) {
     if (errorOut) *errorOut = strdup("Invalid context");
     return 0;
@@ -333,7 +333,7 @@ int HermesCore_callGlobalFunctionWithStringArg(void* context, const char* functi
 }
 
 int HermesCore_callRequireMethod(void* context, const char* moduleId, const char* methodName, char** errorOut) {
-  HermesCoreContext* ctx = static_cast<HermesCoreContext*>(context);
+  ContextBase* ctx = static_cast<ContextBase*>(context);
   if (!ctx || !ctx->runtime) {
     if (errorOut) *errorOut = strdup("Invalid context");
     return 0;
@@ -401,7 +401,7 @@ int HermesCore_callRequireMethod(void* context, const char* moduleId, const char
 }
 
 int HermesCore_installModuleLoader(void* context, char** errorOut) {
-  HermesCoreContext* ctx = static_cast<HermesCoreContext*>(context);
+  ContextBase* ctx = static_cast<ContextBase*>(context);
   if (!ctx || !ctx->runtime) {
     if (errorOut) *errorOut = strdup("Invalid context");
     return 0;
@@ -553,14 +553,14 @@ void HermesCore_setMaxStackSize(void* context, int64_t maxSizeBytes) {
 }
 
 void HermesCore_gc(void* context) {
-  HermesCoreContext* ctx = static_cast<HermesCoreContext*>(context);
+  ContextBase* ctx = static_cast<ContextBase*>(context);
   if (ctx && ctx->runtime) {
     ctx->runtime->instrumentation().collectGarbage("hermes_core_gc");
   }
 }
 
 int HermesCore_getMemoryUsage(void* context, int64_t* heapSizeOut, int64_t* allocBytesOut, int64_t* gcCountOut) {
-  HermesCoreContext* ctx = static_cast<HermesCoreContext*>(context);
+  ContextBase* ctx = static_cast<ContextBase*>(context);
   if (!ctx) {
     return 0;
   }
@@ -575,7 +575,7 @@ const char* HermesCore_getVersion(void) {
 }
 
 const char* HermesCore_getLastError(void* context) {
-  HermesCoreContext* ctx = static_cast<HermesCoreContext*>(context);
+  ContextBase* ctx = static_cast<ContextBase*>(context);
   if (!ctx) {
     return "Invalid context";
   }

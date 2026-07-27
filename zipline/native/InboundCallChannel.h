@@ -16,7 +16,7 @@
 #ifndef ZIPLINE_HERMES_INBOUNDCALLCHANNEL_H
 #define ZIPLINE_HERMES_INBOUNDCALLCHANNEL_H
 
-#include "ContextBase.h"
+#include "hermes-core.h"
 
 #include <jsi/jsi.h>
 #include <string>

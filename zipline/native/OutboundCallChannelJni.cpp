@@ -6,7 +6,7 @@
 
 #include <stdexcept>
 
-#include "ContextBase.h"
+#include "hermes-core.h"
 #include "ContextJni.h"
 
 namespace jsi = facebook::jsi;

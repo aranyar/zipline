@@ -73,8 +73,9 @@ set(HERMES_IOS_STATIC OFF CACHE BOOL "Build iOS as a merged static archive")
 # intrinsics). Platform lists below extend this; do not duplicate entries.
 set(GLUE_COMMON_SOURCES
   ${HERMES_SRC}/../hermes-core.cpp
-  ${HERMES_SRC}/../hermes-ios/hermes-ios.cpp
   ${HERMES_SRC}/../ContextBase.cpp
+  ${HERMES_SRC}/../hermes-ios/hermes-ios.cpp
+  ${HERMES_SRC}/../InboundCallChannel.cpp
   ${HERMES_SRC}/../common/JsIntrinsics.cpp
 )
 
@@ -88,7 +89,6 @@ endif()
 # These are used for macOS host builds.
 set(GLUE_CORE_SOURCES
   ${GLUE_COMMON_SOURCES}
-  ${HERMES_SRC}/../InboundCallChannel.cpp
   ${HERMES_SRC}/../OutboundCallChannel.cpp
   ${HERMES_SRC}/../ExceptionThrowers.cpp
 )
@@ -104,8 +104,6 @@ set(GLUE_JNI_SOURCES
 # iOS-specific glue source files (no JNI dependencies).
 set(GLUE_IOS_SOURCES
   ${GLUE_COMMON_SOURCES}
-  ${HERMES_SRC}/../ContextNative.cpp
-  ${HERMES_SRC}/../ContextNative.h
 )
 
 # Base include dirs for glue sources.

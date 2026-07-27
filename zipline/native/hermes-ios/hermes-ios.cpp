@@ -1,11 +1,14 @@
 #include "hermes-ios.h"
 #include "hermes-core.h"
 #include "../RdmaChange.h"
+#include "../ContextNative.h"
+#include "../InboundCallChannel.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include <string>
 #include <vector>
 
 #include <jsi/jsi.h>
@@ -17,47 +20,45 @@ namespace jsi = facebook::jsi;
 // single-threaded-per-runtime use, and errors are consumed immediately after
 // each failing call on the same thread, so this is acceptable for now. If
 // multi-threaded error reporting is ever needed, move this into
-// HermesIosContext (per-runtime) or use thread_local storage.
+// ContextNative (per-runtime) or use thread_local storage.
 static char g_lastError[1024];
 
-typedef void* (*OutboundCallChannelCallFn)(void* context, const char* callJson);
-typedef int (*OutboundCallChannelDisconnectFn)(void* context, const char* instanceName);
-
-// RdmaChange / RdmaChangeType / RDMA_BATCH_SIZE come from ../RdmaChange.h,
-// shared with the JNI layer.
-
-typedef void (*RdmaChangeSinkFn)(void* context);
-
-// The ios-layer context extends the core Hermes context with the
-// per-runtime bridge state (channel callbacks, RDMA state), so multiple
-// concurrent runtimes (e.g. an old and a new Zipline during a screen
-// transition) never route calls into each other. HermesRuntime_create()
-// returns this struct; HermesContext_* functions pass it to HermesCore_*
-// functions via an implicit upcast.
-struct HermesIosContext : HermesCoreContext {
-    OutboundCallChannelCallFn outboundCallFn = NULL;
-    OutboundCallChannelDisconnectFn outboundDisconnectFn = NULL;
-    RdmaChangeSinkFn rdmaSinkFn = NULL;
-    std::vector<RdmaChange> pendingChanges;
-    int removeCounter = 0;
-};
-
-static HermesIosContext* asIosContext(void* context) {
-    return static_cast<HermesIosContext*>(context);
+// Returns the jsi runtime for a context, recording "Invalid runtime" in
+// g_lastError and returning nullptr on failure. Callers return their own
+// error value (0/NULL) when this returns nullptr.
+static jsi::Runtime* getJsiRuntimeOrNull(void* context) {
+    void* runtime = HermesCore_getRuntime(asNativeContext(context));
+    if (!runtime) {
+        snprintf(g_lastError, sizeof(g_lastError), "Invalid runtime");
+        return nullptr;
+    }
+    return static_cast<jsi::Runtime*>(runtime);
 }
+
+namespace {
+
+char* copyToMalloc(const std::string& str) {
+    char* copy = (char*)malloc(str.size() + 1);
+    if (copy) {
+        memcpy(copy, str.c_str(), str.size() + 1);
+    }
+    return copy;
+}
+
+} // namespace
 
 void HermesContext_setOutboundChannelCallbacks(void* context,
                                                OutboundCallChannelCallFn callFn,
                                                OutboundCallChannelDisconnectFn disconnectFn) {
     if (!context) return;
-    HermesIosContext* ctx = asIosContext(context);
+    ContextNative* ctx = asNativeContext(context);
     ctx->outboundCallFn = callFn;
     ctx->outboundDisconnectFn = disconnectFn;
 }
 
 void HermesContext_setRdmaChangeSink(void* context, RdmaChangeSinkFn sinkFn) {
     if (!context) return;
-    asIosContext(context)->rdmaSinkFn = sinkFn;
+    asNativeContext(context)->rdmaSinkFn = sinkFn;
 }
 
 int HermesFramework_init(void** runtimeOut) {
@@ -65,7 +66,7 @@ int HermesFramework_init(void** runtimeOut) {
         snprintf(g_lastError, sizeof(g_lastError), "Invalid runtime output pointer");
         return 0;
     }
-    HermesIosContext* ctx = new HermesIosContext();
+    ContextNative* ctx = new ContextNative();
     if (!HermesCore_initContext(ctx)) {
         delete ctx;
         snprintf(g_lastError, sizeof(g_lastError), "Failed to create Hermes runtime");
@@ -85,7 +86,7 @@ void* HermesRuntime_create(void) {
 
 void HermesRuntime_destroy(void* runtime) {
     if (runtime) {
-        HermesIosContext* ctx = asIosContext(runtime);
+        ContextNative* ctx = asNativeContext(runtime);
         HermesCore_releaseContext(ctx);
         delete ctx;
     }
@@ -93,7 +94,7 @@ void HermesRuntime_destroy(void* runtime) {
 
 void* HermesRuntime_getJsiRuntime(void* runtime) {
     if (!runtime) return NULL;
-    return HermesCore_getRuntime(asIosContext(runtime));
+    return HermesCore_getRuntime(asNativeContext(runtime));
 }
 
 int HermesContext_evaluate(void* context, const char* code, const char* sourceURL) {
@@ -103,7 +104,7 @@ int HermesContext_evaluate(void* context, const char* code, const char* sourceUR
     }
 
     char* errorOut = NULL;
-    int success = HermesCore_evaluate(asIosContext(context), code, strlen(code), sourceURL, &errorOut);
+    int success = HermesCore_evaluate(asNativeContext(context), code, strlen(code), sourceURL, &errorOut);
     if (!success) {
         snprintf(g_lastError, sizeof(g_lastError), "%s", errorOut ? errorOut : "Evaluation failed");
         if (errorOut) free(errorOut);
@@ -134,7 +135,7 @@ int HermesContext_compile(void* context, const char* code, const char* sourceURL
     size_t bytecodeSize = 0;
     char* errorOut = NULL;
 
-    int success = HermesCore_compile(asIosContext(context), code, sourceURL, sourceMap, &bytecode, &bytecodeSize, &errorOut);
+    int success = HermesCore_compile(asNativeContext(context), code, sourceURL, sourceMap, &bytecode, &bytecodeSize, &errorOut);
     if (!success) {
         snprintf(g_lastError, sizeof(g_lastError), "%s", errorOut ? errorOut : "Compilation failed");
         if (errorOut) free(errorOut);
@@ -164,7 +165,7 @@ int HermesContext_execute(void* context, const uint8_t* bytecode, int bytecodeSi
     }
 
     char* errorOut = NULL;
-    int success = HermesCore_execute(asIosContext(context), bytecode, bytecodeSize, sourceURL, &errorOut);
+    int success = HermesCore_execute(asNativeContext(context), bytecode, bytecodeSize, sourceURL, &errorOut);
     if (!success) {
         snprintf(g_lastError, sizeof(g_lastError), "%s", errorOut ? errorOut : "Execution failed");
         if (errorOut) free(errorOut);
@@ -181,7 +182,7 @@ int HermesContext_getGlobalProperty(void* context, const char* name, char** valu
     }
 
     char* errorOut = NULL;
-    int success = HermesCore_getGlobalProperty(asIosContext(context), name, valueOut, &errorOut);
+    int success = HermesCore_getGlobalProperty(asNativeContext(context), name, valueOut, &errorOut);
     if (!success) {
         snprintf(g_lastError, sizeof(g_lastError), "%s", errorOut ? errorOut : "Failed to get global property");
         if (errorOut) free(errorOut);
@@ -196,7 +197,7 @@ int HermesContext_setGlobalProperty(void* context, const char* name, const char*
     }
 
     char* errorOut = NULL;
-    int success = HermesCore_setGlobalProperty(asIosContext(context), name, value, &errorOut);
+    int success = HermesCore_setGlobalProperty(asNativeContext(context), name, value, &errorOut);
     if (!success) {
         snprintf(g_lastError, sizeof(g_lastError), "%s", errorOut ? errorOut : "Failed to set global property");
         if (errorOut) free(errorOut);
@@ -211,7 +212,7 @@ int HermesContext_deleteGlobalProperty(void* context, const char* name) {
     }
 
     char* errorOut = NULL;
-    int success = HermesCore_deleteGlobalProperty(asIosContext(context), name, &errorOut);
+    int success = HermesCore_deleteGlobalProperty(asNativeContext(context), name, &errorOut);
     if (!success) {
         snprintf(g_lastError, sizeof(g_lastError), "%s", errorOut ? errorOut : "Failed to delete global property");
         if (errorOut) free(errorOut);
@@ -226,7 +227,7 @@ int HermesContext_callGlobalMethod(void* context, const char* objectName, const 
     }
 
     char* errorOut = NULL;
-    int success = HermesCore_callGlobalMethod(asIosContext(context), objectName, methodName, &errorOut);
+    int success = HermesCore_callGlobalMethod(asNativeContext(context), objectName, methodName, &errorOut);
     if (!success) {
         snprintf(g_lastError, sizeof(g_lastError), "%s", errorOut ? errorOut : "Failed to call global method");
         if (errorOut) free(errorOut);
@@ -242,7 +243,7 @@ int HermesContext_callGlobalFunctionWithStringArg(void* context, const char* fun
     }
 
     char* errorOut = NULL;
-    int success = HermesCore_callGlobalFunctionWithStringArg(asIosContext(context), functionName, arg, resultOut, &errorOut);
+    int success = HermesCore_callGlobalFunctionWithStringArg(asNativeContext(context), functionName, arg, resultOut, &errorOut);
     if (!success) {
         snprintf(g_lastError, sizeof(g_lastError), "%s", errorOut ? errorOut : "Failed to call global function");
         if (errorOut) free(errorOut);
@@ -257,7 +258,7 @@ int HermesContext_installModuleLoader(void* context) {
     }
 
     char* errorOut = NULL;
-    int success = HermesCore_installModuleLoader(asIosContext(context), &errorOut);
+    int success = HermesCore_installModuleLoader(asNativeContext(context), &errorOut);
     if (!success) {
         snprintf(g_lastError, sizeof(g_lastError), "%s", errorOut ? errorOut : "Failed to install module loader");
         if (errorOut) free(errorOut);
@@ -272,7 +273,7 @@ int HermesContext_callRequireMethod(void* context, const char* moduleId, const c
     }
 
     char* errorOut = NULL;
-    int success = HermesCore_callRequireMethod(asIosContext(context), moduleId, methodName, &errorOut);
+    int success = HermesCore_callRequireMethod(asNativeContext(context), moduleId, methodName, &errorOut);
     if (!success) {
         snprintf(g_lastError, sizeof(g_lastError), "%s", errorOut ? errorOut : "Failed to call require method");
         if (errorOut) free(errorOut);
@@ -286,13 +287,11 @@ int HermesContext_initRdmaChangesChannel(void* context) {
         return 0;
     }
 
-    void* runtime = HermesCore_getRuntime(asIosContext(context));
-    if (!runtime) {
-        snprintf(g_lastError, sizeof(g_lastError), "Invalid runtime");
+    jsi::Runtime* rtPtr = getJsiRuntimeOrNull(context);
+    if (!rtPtr) {
         return 0;
     }
-
-    jsi::Runtime& rt = *static_cast<jsi::Runtime*>(runtime);
+    jsi::Runtime& rt = *rtPtr;
 
     jsi::Object rdmaObj(rt);
 
@@ -303,7 +302,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
             if (count < 2 || !args[0].isNumber() || !args[1].isNumber()) {
                 throw jsi::JSError(runtime, "appendCreate expects (id, tag)");
             }
-            HermesIosContext* ctx = asIosContext(context);
+            ContextNative* ctx = asNativeContext(context);
             RdmaChange ch;
             ch.type = RdmaChangeType::Create;
             ch.id = static_cast<int>(args[0].asNumber());
@@ -321,7 +320,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
             if (count < 4 || !args[0].isNumber() || !args[1].isNumber() || !args[2].isNumber()) {
                 throw jsi::JSError(runtime, "appendPropertyChange expects (id, widgetTag, propertyTag, value)");
             }
-            HermesIosContext* ctx = asIosContext(context);
+            ContextNative* ctx = asNativeContext(context);
             RdmaChange ch;
             ch.type = RdmaChangeType::PropertyChange;
             ch.id = static_cast<int>(args[0].asNumber());
@@ -340,7 +339,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
             if (count < 2 || !args[0].isNumber() || !args[1].isObject()) {
                 throw jsi::JSError(runtime, "appendModifierChange expects (id, elements)");
             }
-            HermesIosContext* ctx = asIosContext(context);
+            ContextNative* ctx = asNativeContext(context);
             RdmaChange ch;
             ch.type = RdmaChangeType::ModifierChange;
             ch.id = static_cast<int>(args[0].asNumber());
@@ -357,7 +356,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
             if (count < 4 || !args[0].isNumber() || !args[1].isNumber() || !args[2].isNumber() || !args[3].isNumber()) {
                 throw jsi::JSError(runtime, "appendAdd expects (id, childrenTag, childId, index)");
             }
-            HermesIosContext* ctx = asIosContext(context);
+            ContextNative* ctx = asNativeContext(context);
             RdmaChange ch;
             ch.type = RdmaChangeType::Add;
             ch.id = static_cast<int>(args[0].asNumber());
@@ -377,7 +376,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
             if (count < 3 || !args[0].isNumber() || !args[1].isNumber() || !args[2].isNumber()) {
                 throw jsi::JSError(runtime, "appendRemove expects (id, childrenTag, index)");
             }
-            HermesIosContext* ctx = asIosContext(context);
+            ContextNative* ctx = asNativeContext(context);
             RdmaChange ch;
             ch.type = RdmaChangeType::Remove;
             ch.id = static_cast<int>(args[0].asNumber());
@@ -401,7 +400,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
             if (count < 1 || !args[0].isNumber()) {
                 throw jsi::JSError(runtime, "setRemoveDetach expects (idx)");
             }
-            HermesIosContext* ctx = asIosContext(context);
+            ContextNative* ctx = asNativeContext(context);
             // idx is the remove ordinal returned by appendRemove(), not an
             // index into pendingChanges: find the idx-th Remove change.
             int idx = static_cast<int>(args[0].asNumber());
@@ -425,7 +424,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
             if (count < 5 || !args[0].isNumber() || !args[1].isNumber() || !args[2].isNumber() || !args[3].isNumber() || !args[4].isNumber()) {
                 throw jsi::JSError(runtime, "appendMove expects (id, childrenTag, fromIndex, toIndex, count)");
             }
-            HermesIosContext* ctx = asIosContext(context);
+            ContextNative* ctx = asNativeContext(context);
             RdmaChange ch;
             ch.type = RdmaChangeType::Move;
             ch.id = static_cast<int>(args[0].asNumber());
@@ -448,7 +447,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
             // pendingChanges list and removeCounter per context; only the
             // final sendChanges() call delegates to Kotlin.
             RdmaChangeSinkFn sinkFn = NULL;
-            HermesIosContext* ctx = asIosContext(context);
+            ContextNative* ctx = asNativeContext(context);
             ctx->removeCounter = 0;
             sinkFn = ctx->rdmaSinkFn;
             if (sinkFn) {
@@ -463,7 +462,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
         rt, jsi::PropNameID::forUtf8(rt, "changesLength"), 0,
         [context](jsi::Runtime& runtime, const jsi::Value& thisVal,
            const jsi::Value* args, size_t count) -> jsi::Value {
-            return jsi::Value(asIosContext(context)->removeCounter);
+            return jsi::Value(asNativeContext(context)->removeCounter);
         });
     rdmaObj.setProperty(rt, "changesLength", changesLengthFn);
 
@@ -473,25 +472,25 @@ int HermesContext_initRdmaChangesChannel(void* context) {
 
 void HermesContext_setMemoryLimit(void* context, int64_t limitBytes) {
     if (context) {
-        HermesCore_setMemoryLimit(asIosContext(context), limitBytes);
+        HermesCore_setMemoryLimit(asNativeContext(context), limitBytes);
     }
 }
 
 void HermesContext_setGcThreshold(void* context, int64_t thresholdBytes) {
     if (context) {
-        HermesCore_setGcThreshold(asIosContext(context), thresholdBytes);
+        HermesCore_setGcThreshold(asNativeContext(context), thresholdBytes);
     }
 }
 
 void HermesContext_setMaxStackSize(void* context, int64_t maxStackSizeBytes) {
     if (context) {
-        HermesCore_setMaxStackSize(asIosContext(context), maxStackSizeBytes);
+        HermesCore_setMaxStackSize(asNativeContext(context), maxStackSizeBytes);
     }
 }
 
 void HermesContext_gc(void* context) {
     if (context) {
-        HermesCore_gc(asIosContext(context));
+        HermesCore_gc(asNativeContext(context));
     }
 }
 
@@ -501,7 +500,7 @@ int HermesContext_getMemoryUsage(void* context, HermesMemoryUsage* usageOut) {
     }
 
     int64_t heapSize = 0, allocBytes = 0, gcCount = 0;
-    int success = HermesCore_getMemoryUsage(asIosContext(context), &heapSize, &allocBytes, &gcCount);
+    int success = HermesCore_getMemoryUsage(asNativeContext(context), &heapSize, &allocBytes, &gcCount);
     if (success) {
         usageOut->heapSize = heapSize;
         usageOut->allocBytes = allocBytes;
@@ -516,54 +515,12 @@ const char* Hermes_getVersion(void) {
 
 const char* HermesContext_getLastError(void* context) {
     if (context) {
-        const char* err = HermesCore_getLastError(asIosContext(context));
+        const char* err = HermesCore_getLastError(asNativeContext(context));
         if (err && strlen(err) > 0) {
             return err;
         }
     }
     return g_lastError;
-}
-
-int HermesContext_setInboundCallChannel(void* context, const char* channelName) {
-    if (!context || !channelName) {
-        snprintf(g_lastError, sizeof(g_lastError), "Invalid parameters");
-        return 0;
-    }
-
-    void* runtime = HermesCore_getRuntime(asIosContext(context));
-    if (!runtime) {
-        snprintf(g_lastError, sizeof(g_lastError), "Invalid runtime");
-        return 0;
-    }
-
-    jsi::Runtime& rt = *static_cast<jsi::Runtime*>(runtime);
-
-    jsi::Object channelObj(rt);
-    jsi::Function callFn = jsi::Function::createFromHostFunction(
-        rt, jsi::PropNameID::forUtf8(rt, "call"), 1,
-        [](jsi::Runtime& runtime, const jsi::Value& thisVal,
-           const jsi::Value* args, size_t count) -> jsi::Value {
-            if (count < 1 || !args[0].isString()) {
-                throw jsi::JSError(runtime, "call expects a string argument");
-            }
-            std::string callJson = args[0].asString(runtime).utf8(runtime);
-            return jsi::String::createFromUtf8(runtime, callJson);
-        });
-    channelObj.setProperty(rt, "call", callFn);
-
-    jsi::Function disconnectFn = jsi::Function::createFromHostFunction(
-        rt, jsi::PropNameID::forUtf8(rt, "disconnect"), 1,
-        [](jsi::Runtime& runtime, const jsi::Value& thisVal,
-           const jsi::Value* args, size_t count) -> jsi::Value {
-            if (count < 1 || !args[0].isString()) {
-                throw jsi::JSError(runtime, "disconnect expects a string argument");
-            }
-            return jsi::Value(false);
-        });
-    channelObj.setProperty(rt, "disconnect", disconnectFn);
-
-    rt.global().setProperty(rt, channelName, channelObj);
-    return 1;
 }
 
 int HermesContext_setupOutboundCallChannel(void* context) {
@@ -572,13 +529,11 @@ int HermesContext_setupOutboundCallChannel(void* context) {
         return 0;
     }
 
-    void* runtime = HermesCore_getRuntime(asIosContext(context));
-    if (!runtime) {
-        snprintf(g_lastError, sizeof(g_lastError), "Invalid runtime");
+    jsi::Runtime* rtPtr = getJsiRuntimeOrNull(context);
+    if (!rtPtr) {
         return 0;
     }
-
-    jsi::Runtime& rt = *static_cast<jsi::Runtime*>(runtime);
+    jsi::Runtime& rt = *rtPtr;
 
     jsi::Object outboundChannel(rt);
 
@@ -591,7 +546,7 @@ int HermesContext_setupOutboundCallChannel(void* context) {
             }
             std::string callJson = args[0].asString(runtime).utf8(runtime);
 
-            HermesIosContext* ctx = asIosContext(context);
+            ContextNative* ctx = asNativeContext(context);
             if (ctx->outboundCallFn) {
                 char* result = (char*)ctx->outboundCallFn(context, callJson.c_str());
                 if (result) {
@@ -613,7 +568,7 @@ int HermesContext_setupOutboundCallChannel(void* context) {
             }
             std::string instanceName = args[0].asString(runtime).utf8(runtime);
 
-            HermesIosContext* ctx = asIosContext(context);
+            ContextNative* ctx = asNativeContext(context);
             if (ctx->outboundDisconnectFn) {
                 int result = ctx->outboundDisconnectFn(context, instanceName.c_str());
                 return jsi::Value(result != 0);
@@ -632,42 +587,21 @@ char* HermesContext_callInbound(void* context, const char* channelName, const ch
         return NULL;
     }
 
-    void* runtime = HermesCore_getRuntime(asIosContext(context));
-    if (!runtime) {
+    ContextNative* ctx = asNativeContext(context);
+    if (!ctx->runtime) {
         snprintf(g_lastError, sizeof(g_lastError), "Invalid runtime");
         return NULL;
     }
 
-    jsi::Runtime& rt = *static_cast<jsi::Runtime*>(runtime);
-
-    jsi::Value channel = rt.global().getProperty(rt, channelName);
-    if (!channel.isObject()) {
-        snprintf(g_lastError, sizeof(g_lastError), "Channel %s not found", channelName);
+    // InboundCallChannel reports errors via throwJsException, captured in
+    // the context's lastError and mapped to the C API error channel.
+    InboundCallChannel channel(channelName);
+    std::string result = channel.call(ctx, callJson);
+    if (!ctx->lastError.empty()) {
+        snprintf(g_lastError, sizeof(g_lastError), "%s", ctx->lastError.c_str());
         return NULL;
     }
-
-    jsi::Object channelObj = channel.asObject(rt);
-    jsi::Value callFn = channelObj.getProperty(rt, "call");
-    if (!callFn.isObject() || !callFn.asObject(rt).isFunction(rt)) {
-        snprintf(g_lastError, sizeof(g_lastError), "Channel %s has no call function", channelName);
-        return NULL;
-    }
-
-    try {
-        jsi::Value result = callFn.asObject(rt).asFunction(rt).callWithThis(
-            rt, channelObj, {jsi::String::createFromUtf8(rt, callJson)});
-        if (result.isString()) {
-            std::string resultStr = result.asString(rt).utf8(rt);
-            char* copy = (char*)malloc(resultStr.size() + 1);
-            if (copy) {
-                memcpy(copy, resultStr.c_str(), resultStr.size() + 1);
-            }
-            return copy;
-        }
-    } catch (const jsi::JSError& e) {
-        snprintf(g_lastError, sizeof(g_lastError), "%s", e.what());
-    }
-    return NULL;
+    return copyToMalloc(result);
 }
 
 char* HermesContext_callInboundDisconnect(void* context, const char* channelName, const char* instanceName) {
@@ -676,38 +610,17 @@ char* HermesContext_callInboundDisconnect(void* context, const char* channelName
         return NULL;
     }
 
-    void* runtime = HermesCore_getRuntime(asIosContext(context));
-    if (!runtime) {
+    ContextNative* ctx = asNativeContext(context);
+    if (!ctx->runtime) {
         snprintf(g_lastError, sizeof(g_lastError), "Invalid runtime");
         return NULL;
     }
 
-    jsi::Runtime& rt = *static_cast<jsi::Runtime*>(runtime);
-
-    jsi::Value channel = rt.global().getProperty(rt, channelName);
-    if (!channel.isObject()) {
-        snprintf(g_lastError, sizeof(g_lastError), "Channel %s not found", channelName);
+    InboundCallChannel channel(channelName);
+    bool result = channel.disconnect(ctx, instanceName);
+    if (!ctx->lastError.empty()) {
+        snprintf(g_lastError, sizeof(g_lastError), "%s", ctx->lastError.c_str());
         return NULL;
     }
-
-    jsi::Object channelObj = channel.asObject(rt);
-    jsi::Value disconnectFn = channelObj.getProperty(rt, "disconnect");
-    if (!disconnectFn.isObject() || !disconnectFn.asObject(rt).isFunction(rt)) {
-        snprintf(g_lastError, sizeof(g_lastError), "Channel %s has no disconnect function", channelName);
-        return NULL;
-    }
-
-    try {
-        jsi::Value result = disconnectFn.asObject(rt).asFunction(rt).callWithThis(
-            rt, channelObj, {jsi::String::createFromUtf8(rt, instanceName)});
-        std::string resultStr = result.isBool() ? (result.asBool() ? "true" : "false") : "false";
-        char* copy = (char*)malloc(resultStr.size() + 1);
-        if (copy) {
-            memcpy(copy, resultStr.c_str(), resultStr.size() + 1);
-        }
-        return copy;
-    } catch (const jsi::JSError& e) {
-        snprintf(g_lastError, sizeof(g_lastError), "%s", e.what());
-    }
-    return NULL;
+    return copyToMalloc(result ? "true" : "false");
 }

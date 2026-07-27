@@ -61,10 +61,6 @@ void HermesContext_setOutboundChannelCallbacks(void* context,
 typedef void (*RdmaChangeSinkFn)(void* context);
 void HermesContext_setRdmaChangeSink(void* context, RdmaChangeSinkFn sinkFn);
 
-// Inbound call channel (Kotlin calling into JS)
-// channelName is the JS global property name where the channel object is registered
-int HermesContext_setInboundCallChannel(void* context, const char* channelName);
-
 // Outbound call channel (JS calling into Kotlin)
 // Sets up global "outboundChannel" object with call/disconnect functions
 // that delegate to the callbacks set via HermesContext_setOutboundChannelCallbacks
