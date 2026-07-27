@@ -161,24 +161,8 @@ kotlin {
       // macOS/Linux keep using the checked-in def file plus dynamic lookup
       // of the host dylib built by the buildHermesHost* tasks below.
       val hermesDefFile = when (konanTarget.family) {
-        Family.IOS -> {
-          val defDir = layout.buildDirectory.dir("generated/cinterop").get().asFile
-            .also { it.mkdirs() }
-          val defFile = File(defDir, "hermes-${konanTarget.name}.def")
-          val hermesStaticDir = layout.buildDirectory
-            .dir("hermes-static/${konanTarget.name}/cmake").get().asFile
-          defFile.writeText(
-            """
-            package = app.cash.zipline.hermes
-            headers = ${file("native/hermes-ios/hermes-ios.h").absolutePath} ${file("native/hermes-core.h").absolutePath}
-            compilerOpts = -I${file("native/hermes-ios").absolutePath} -I${file("native").absolutePath}
-            staticLibraries = libhermesvm.a
-            libraryPaths = ${hermesStaticDir.absolutePath}
-            linkerOpts.ios = -framework Foundation -lsqlite3
-            """.trimIndent()
-          )
-          defFile
-        }
+        Family.IOS -> layout.buildDirectory
+          .file("generated/cinterop/hermes-${konanTarget.name}.def").get().asFile
         else -> file("src/nativeInterop/cinterop/hermes.def")
       }
 
@@ -625,17 +609,51 @@ val buildHermesStaticIosSimulatorArm64 =
     architectures = "arm64",
   )
 
+// Generate the cinterop .def consumed by the iOS cinterop task (referenced
+// in the cinterop block above). This must be a real task with a declared
+// output: writing the file at configuration time breaks after `clean` when
+// the configuration cache reuses a cached configuration.
+fun registerGenerateHermesDef(konanTarget: KonanTarget): TaskProvider<Task> {
+  val defFile = layout.buildDirectory.file("generated/cinterop/hermes-${konanTarget.name}.def")
+  return tasks.register("generateHermesDef${konanTarget.name.replaceUnderscoreCamelCase()}") {
+    description = "Generate hermes cinterop def for ${konanTarget.name}"
+    group = "build"
+    outputs.file(defFile)
+    doLast {
+      val f = defFile.get().asFile
+      f.parentFile.mkdirs()
+      val hermesStaticDir = layout.buildDirectory
+        .dir("hermes-static/${konanTarget.name}/cmake").get().asFile
+      f.writeText(
+        """
+        package = app.cash.zipline.hermes
+        headers = ${file("native/hermes-ios/hermes-ios.h").absolutePath} ${file("native/hermes-core.h").absolutePath}
+        compilerOpts = -I${file("native/hermes-ios").absolutePath} -I${file("native").absolutePath}
+        staticLibraries = libhermesvm.a
+        libraryPaths = ${hermesStaticDir.absolutePath}
+        linkerOpts.ios = -framework Foundation -lsqlite3
+        """.trimIndent()
+      )
+    }
+  }
+}
+
+val generateHermesDefIosArm64 = registerGenerateHermesDef(KonanTarget.IOS_ARM64)
+val generateHermesDefIosX64 = registerGenerateHermesDef(KonanTarget.IOS_X64)
+val generateHermesDefIosSimulatorArm64 = registerGenerateHermesDef(KonanTarget.IOS_SIMULATOR_ARM64)
+
 // The iOS Kotlin/Native interop tasks need the static archive to exist so
-// cinterop can copy it into the hermes.klib. The archive is also declared as
-// an input: dependsOn alone only orders the tasks, so a rebuilt archive
+// cinterop can copy it into the hermes.klib, and the generated .def to
+// exist as their declared definitionFile input. The archive is also declared
+// as an input: dependsOn alone only orders the tasks, so a rebuilt archive
 // would otherwise leave a stale copy inside the klib.
 listOf(
-  "cinteropHermesIosArm64" to buildHermesStaticIosArm64,
-  "cinteropHermesIosX64" to buildHermesStaticIosX64,
-  "cinteropHermesIosSimulatorArm64" to buildHermesStaticIosSimulatorArm64,
-).forEach { (taskName, staticTask) ->
+  Triple("cinteropHermesIosArm64", buildHermesStaticIosArm64, generateHermesDefIosArm64),
+  Triple("cinteropHermesIosX64", buildHermesStaticIosX64, generateHermesDefIosX64),
+  Triple("cinteropHermesIosSimulatorArm64", buildHermesStaticIosSimulatorArm64, generateHermesDefIosSimulatorArm64),
+).forEach { (taskName, staticTask, defTask) ->
   tasks.matching { it.name == taskName }.configureEach {
-    dependsOn(staticTask)
+    dependsOn(staticTask, defTask)
     inputs.files(staticTask.map { it.outputs.files })
   }
 }
