@@ -43,18 +43,30 @@ tasks.register<Exec>("jsQjsTest") {
     )
 }
 
+// Run the qjs intrinsics suite as part of the standard jsTest lifecycle task.
+// allTests runs ONLY the qjs intrinsics suite: the stock KGP test runners
+// (Karma/browser, node, JVM, native) are not part of this module's test
+// surface. afterEvaluate because KGP wires allTests' dependencies late.
+afterEvaluate {
+    tasks.named("allTests") {
+        setDependsOn(listOf("jsQjsTest"))
+    }
+}
+
 kotlin {
   jvm()
 
   js {
     browser {
-        testTask {
-            useKarma {
-                useChromeHeadless()
-            }
-        }
+      testTask {
+        enabled = false
+      }
     }
-    nodejs()
+    nodejs {
+      testTask {
+        enabled = false
+      }
+    }
     binaries.executable()
     // TODO upstream this to ZiplinePlugin
     binaries.library()
