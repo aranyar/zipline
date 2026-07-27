@@ -339,23 +339,21 @@ ContextJni::toJavaObject(JNIEnv* env, const jsi::Value& value, bool throwOnUnsup
   if (value.isNull() || value.isUndefined()) {
     return nullptr;
   }
-  if (value.isObject()) {
-    jsi::Object obj = value.asObject(*runtime);
-    if (obj.isArray(*runtime)) {
-      jsi::Array arr = obj.asArray(*runtime);
-      size_t len = arr.length(*runtime);
-      jobjectArray result = env->NewObjectArray(static_cast<jsize>(len), objectClass, nullptr);
-      for (size_t i = 0; i < len && !env->ExceptionCheck(); i++) {
-        jobject el = toJavaObject(env, arr.getValueAtIndex(*runtime, i));
-        env->SetObjectArrayElement(result, static_cast<jsize>(i), el);
-        if (el) env->DeleteLocalRef(el);
-      }
-      return result;
-    }
-    // Fall through: non-array objects (functions, plain objects, etc.) become
-    // Java null when throwOnUnsupportedType is false (the top-level evaluate()
-    // path). QuickJS used the same lenient default.
-  }
+  // Drop array support as not used in compose-live and a bit hard to implement in Kotlin/Native
+  // if (value.isObject()) {
+  //   jsi::Object obj = value.asObject(*runtime);
+  //   if (obj.isArray(*runtime)) {
+  //     jsi::Array arr = obj.asArray(*runtime);
+  //     size_t len = arr.length(*runtime);
+  //     jobjectArray result = env->NewObjectArray(static_cast<jsize>(len), objectClass, nullptr);
+  //     for (size_t i = 0; i < len && !env->ExceptionCheck(); i++) {
+  //       jobject el = toJavaObject(env, arr.getValueAtIndex(*runtime, i));
+  //       env->SetObjectArrayElement(result, static_cast<jsize>(i), el);
+  //       if (el) env->DeleteLocalRef(el);
+  //     }
+  //     return result;
+  //   }
+  // }
   if (throwOnUnsupportedType) {
     throwJsExceptionFmt(
         env, this, "Cannot marshal Hermes value of this kind to Java");

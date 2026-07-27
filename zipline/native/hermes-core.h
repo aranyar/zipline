@@ -46,13 +46,8 @@ void* HermesCore_createContext(void* jniEnv);
 // Destroy a Hermes Context created by HermesCore_createContext
 void HermesCore_destroyContext(void* context);
 
-// Execute pre-compiled bytecode (returns 0 on error)
-int HermesCore_execute(void* context, const uint8_t* bytecode, size_t bytecodeSize, const char* sourceURL, char** errorOut);
-
-// Evaluate JavaScript directly (returns 0 on error).
-// codeSize is the length of code in bytes; pass 0 to use strlen(code).
-// sourceURL is used for error stack traces (pass nullptr for "<eval>").
-int HermesCore_evaluate(void* context, const char* code, size_t codeSize, const char* sourceURL, char** errorOut);
+// Returns 1 if a global object property called name exists and is an object.
+int HermesCore_hasGlobalObject(void* context, const char* name);
 
 // Get the jsi::Runtime from a context (for iOS wrapper layer)
 void* HermesCore_getRuntime(void* context);

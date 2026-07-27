@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "../hermes-core.h"
 #include "../common/intset-builtins.h"
 
 #ifdef __cplusplus
@@ -25,14 +26,34 @@ void HermesRuntime_destroy(void* runtime);
 // (used to register JS intrinsics right after creation).
 void* HermesRuntime_getJsiRuntime(void* runtime);
 
-// Evaluation - executes the script and discards the result
-int HermesContext_evaluate(void* context, const char* code, const char* sourceURL);
-void HermesContext_freeValue(void* context, char* value);
+// Tagged scalar result of evaluate/execute. Only bool, int, double and
+// string are supported: all other kinds (objects, arrays, functions) map
+// to HERMES_TAG_NULL.
+#define HERMES_TAG_ERROR -1
+#define HERMES_TAG_NULL 0
+#define HERMES_TAG_INT 1
+#define HERMES_TAG_DOUBLE 2
+#define HERMES_TAG_STRING 3
+#define HERMES_TAG_BOOL 4
+typedef struct {
+  int tag;
+  double number;  // HERMES_TAG_INT (integral) / HERMES_TAG_DOUBLE / HERMES_TAG_BOOL (0/1)
+  char* string;   // HERMES_TAG_STRING: malloc'd; caller frees with free()
+} HermesTaggedValue;
 
-// Bytecode compilation and execution
+// Evaluation - executes the script and returns the result as a tagged
+// scalar. On error the returned tag is HERMES_TAG_ERROR and the message is
+// available via HermesContext_getLastError. String payloads are freed
+// with HermesContext_freeValue.
+HermesTaggedValue HermesContext_evaluate(void* context, const char* code, const char* sourceURL);
+void HermesContext_freeValue(void* context, char* value);
+int HermesContext_hasGlobalObject(void* context, const char* name);
+
+// Bytecode compilation and execution (same tagged-scalar result contract
+// as HermesContext_evaluate)
 int HermesContext_compile(void* context, const char* code, const char* sourceURL,
                           const char* sourceMap, char** bytecodeOut, int* bytecodeSizeOut);
-int HermesContext_execute(void* context, const uint8_t* bytecode, int bytecodeSize,
+HermesTaggedValue HermesContext_execute(void* context, const uint8_t* bytecode, int bytecodeSize,
                          const char* sourceURL);
 
 // Global properties

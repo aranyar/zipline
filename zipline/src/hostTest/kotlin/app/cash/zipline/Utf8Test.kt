@@ -74,8 +74,9 @@ class Utf8Test {
       js.evaluate("formatter.format();")
     }
     val expectedSubstring = when {
-      isJni -> "JavaScript.f1(a\uD83D\uDC1Dcdefg.js:4)"
-      else -> "at f1 (a\uD83D\uDC1Dcdefg.js:4)"
+      isJni -> "JavaScript.f1(a🐝cdefg.js:4)"
+      // Hermes native stack frames are file:line:column.
+      else -> "at f1 (a🐝cdefg.js:4:3)"
     }
     assertThat(t.stackTraceToString()).contains(expectedSubstring)
   }

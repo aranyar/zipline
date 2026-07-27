@@ -60,8 +60,8 @@ class HermesOutboundChannelTest {
       """
       globalThis.$OUTBOUND_CHANNEL_NAME.disconnect('theInstanceName');
     """.trimIndent(),
-    ) as Boolean
-    assertTrue(disconnectResult)
+    )
+    assertTrue(disconnectResult as Boolean)
     assertEquals(
       listOf(
         "disconnect(theInstanceName)",

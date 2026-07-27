@@ -97,21 +97,64 @@ void* HermesRuntime_getJsiRuntime(void* runtime) {
     return HermesCore_getRuntime(asNativeContext(runtime));
 }
 
-int HermesContext_evaluate(void* context, const char* code, const char* sourceURL) {
+namespace {
+
+HermesTaggedValue toTaggedValue(jsi::Runtime& rt, const jsi::Value& v) {
+    HermesTaggedValue out;
+    out.tag = HERMES_TAG_NULL;
+    out.number = 0;
+    out.string = nullptr;
+    if (v.isBool()) {
+        out.tag = HERMES_TAG_BOOL;
+        out.number = v.asBool() ? 1 : 0;
+    } else if (v.isNumber()) {
+        // Always encode numbers as double; the platform side re-narrows
+        // integral values to Int.
+        out.tag = HERMES_TAG_DOUBLE;
+        out.number = v.asNumber();
+    } else if (v.isString()) {
+        out.tag = HERMES_TAG_STRING;
+        out.string = strdup(v.asString(rt).utf8(rt).c_str());
+    }
+    return out;
+}
+
+} // namespace
+
+HermesTaggedValue HermesContext_evaluate(void* context, const char* code, const char* sourceURL) {
     if (!context || !code) {
         snprintf(g_lastError, sizeof(g_lastError), "Invalid parameters");
-        return 0;
+        return HermesTaggedValue{HERMES_TAG_ERROR, 0, NULL};
     }
 
-    char* errorOut = NULL;
-    int success = HermesCore_evaluate(asNativeContext(context), code, strlen(code), sourceURL, &errorOut);
-    if (!success) {
-        snprintf(g_lastError, sizeof(g_lastError), "%s", errorOut ? errorOut : "Evaluation failed");
-        if (errorOut) free(errorOut);
-        return 0;
+    ContextBase* ctx = asNativeContext(context);
+    if (!ctx->runtime) {
+        snprintf(g_lastError, sizeof(g_lastError), "Invalid runtime");
+        return HermesTaggedValue{HERMES_TAG_ERROR, 0, NULL};
     }
 
-    return 1;
+    try {
+        std::string source(code, strlen(code));
+        jsi::Value result = ctx->runtime->evaluateJavaScript(
+            std::make_unique<jsi::StringBuffer>(std::move(source)),
+            sourceURL ? sourceURL : "<eval>");
+        return toTaggedValue(*ctx->runtime, result);
+    } catch (const jsi::JSError& e) {
+        // Full text goes to ctx->lastError (unbounded; preferred by
+        // HermesContext_getLastError), not the fixed g_lastError buffer.
+        ctx->lastError = e.getMessage() + std::string("\n") + e.getStack();
+        return HermesTaggedValue{HERMES_TAG_ERROR, 0, NULL};
+    } catch (const std::exception& e) {
+        ctx->lastError = e.what();
+        return HermesTaggedValue{HERMES_TAG_ERROR, 0, NULL};
+    }
+}
+
+int HermesContext_hasGlobalObject(void* context, const char* name) {
+    if (!context || !name) {
+        return 0;
+    }
+    return HermesCore_hasGlobalObject(asNativeContext(context), name);
 }
 
 void HermesContext_freeValue(void* context, char* value) {
@@ -157,22 +200,30 @@ int HermesContext_compile(void* context, const char* code, const char* sourceURL
 #endif
 }
 
-int HermesContext_execute(void* context, const uint8_t* bytecode, int bytecodeSize,
-                         const char* sourceURL) {
+HermesTaggedValue HermesContext_execute(void* context, const uint8_t* bytecode, int bytecodeSize,
+                                        const char* sourceURL) {
     if (!context || !bytecode) {
         snprintf(g_lastError, sizeof(g_lastError), "Invalid parameters");
-        return 0;
+        return HermesTaggedValue{HERMES_TAG_ERROR, 0, NULL};
     }
 
-    char* errorOut = NULL;
-    int success = HermesCore_execute(asNativeContext(context), bytecode, bytecodeSize, sourceURL, &errorOut);
-    if (!success) {
-        snprintf(g_lastError, sizeof(g_lastError), "%s", errorOut ? errorOut : "Execution failed");
-        if (errorOut) free(errorOut);
-        return 0;
+    ContextBase* ctx = asNativeContext(context);
+    if (!ctx->runtime) {
+        snprintf(g_lastError, sizeof(g_lastError), "Invalid runtime");
+        return HermesTaggedValue{HERMES_TAG_ERROR, 0, NULL};
     }
 
-    return 1;
+    try {
+        jsi::Value result = HermesCore_evaluateBytecode(
+            ctx, bytecode, bytecodeSize, sourceURL ? sourceURL : "zipline-module.js");
+        return toTaggedValue(*ctx->runtime, result);
+    } catch (const jsi::JSError& e) {
+        ctx->lastError = e.getMessage() + std::string("\n") + e.getStack();
+        return HermesTaggedValue{HERMES_TAG_ERROR, 0, NULL};
+    } catch (const std::exception& e) {
+        ctx->lastError = e.what();
+        return HermesTaggedValue{HERMES_TAG_ERROR, 0, NULL};
+    }
 }
 
 int HermesContext_getGlobalProperty(void* context, const char* name, char** valueOut) {

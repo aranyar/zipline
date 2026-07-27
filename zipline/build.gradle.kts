@@ -537,6 +537,14 @@ val stageHermesHostDylibs: TaskProvider<Sync> =
 
 // Build a merged static Hermes+Zipline archive for a single iOS variant.
 // The output libhermesvm.a is embedded in the iOS Kotlin/Native klib.
+//
+// Lean mode (no JS compiler, ~1 MB smaller) is for PRODUCTION publishes and
+// is OFF by default so compile()/evaluate() work in dev and in the test
+// suite (dev-mode loadJsModule compiles JS on-device). Publish with:
+//   ./gradlew publish... -PhermesIosLean=true
+val hermesIosLean: Boolean =
+  providers.gradleProperty("hermesIosLean").orNull?.toBooleanStrictOrNull() ?: false
+
 fun registerBuildHermesStaticIos(
   konanTarget: KonanTarget,
   sdk: String,
@@ -553,6 +561,7 @@ fun registerBuildHermesStaticIos(
     inputs.files(hermesGlueInputFiles)
     inputs.files(hermesCmakeInputFiles)
     inputs.file(file("native/hermes-ios.exports"))
+    inputs.property("hermesIosLean", hermesIosLean)
     outputs.file(outputFile)
     val cmakeBin = System.getenv("CMAKE_BIN") ?: "cmake"
     val jobs = Runtime.getRuntime().availableProcessors().toString()
@@ -574,7 +583,7 @@ fun registerBuildHermesStaticIos(
         -DCMAKE_OSX_SYSROOT="${'$'}SDK_PATH" \
         -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
         -DCMAKE_OSX_ARCHITECTURES='$architectures' \
-        -DHERMESVM_LEAN=ON \
+        -DHERMESVM_LEAN=${if (hermesIosLean) "ON" else "OFF"} \
         -DHERMES_IOS_STATIC=ON \
         -DHERMES_SRC='${jsEngineRoot.absolutePath}' \
         -DIMPORT_HOST_COMPILERS='${hermesImportCompilers.absolutePath}'

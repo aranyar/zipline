@@ -125,14 +125,28 @@ actual class JsEngine private constructor(
       throw UnsupportedOperationException("maxStackSize is not supported by the Hermes engine")
     }
 
+  private fun HermesTaggedValue.toAny(errorFallback: String): Any? = when (tag) {
+    HERMES_TAG_ERROR -> throw JsException(
+      HermesContext_getLastError(contextPointer)?.toKString() ?: errorFallback,
+    )
+    HERMES_TAG_NULL -> null
+    HERMES_TAG_INT -> number.toInt()
+    // Numbers always cross as double; re-narrow integral values to Int.
+    HERMES_TAG_DOUBLE -> number.toInt().let { if (it.toDouble() == number) it else number }
+    HERMES_TAG_BOOL -> number != 0.0
+    HERMES_TAG_STRING -> {
+      val value = string!!.toKString()
+      HermesContext_freeValue(contextPointer, string)
+      value
+    }
+    else -> null
+  }
+
   actual fun evaluate(script: String, fileName: String): Any? {
     checkNotClosed()
-    val result = HermesContext_evaluate(contextPointer, script, fileName)
-    if (result == 0) {
-      val error = HermesContext_getLastError(contextPointer)
-      throw UnsupportedOperationException(error?.toKString() ?: "Evaluation failed")
+    return HermesContext_evaluate(contextPointer, script, fileName).useContents {
+      toAny("Evaluation failed")
     }
-    return null
   }
 
   actual fun compile(sourceCode: String, fileName: String, sourceMap: String?): ByteArray {
@@ -150,7 +164,7 @@ actual class JsEngine private constructor(
       )
       if (result == 0) {
         val error = HermesContext_getLastError(contextPointer)
-        throw UnsupportedOperationException(error?.toKString() ?: "Compilation failed")
+        throw JsException(error?.toKString() ?: "Compilation failed")
       }
       val bytecodeSizeVal = bytecodeSizeOut.value
       val bytecode = if (bytecodeOut.value != null && bytecodeSizeVal > 0) {
@@ -166,18 +180,14 @@ actual class JsEngine private constructor(
   actual fun execute(bytecode: ByteArray, fileName: String): Any? {
     checkNotClosed()
     val byteArrayPin = bytecode.pin()
-    val result = HermesContext_execute(
+    val tagged = HermesContext_execute(
       contextPointer,
       byteArrayPin.addressOf(0).reinterpret<UByteVar>(),
       bytecode.size,
       fileName,
     )
     byteArrayPin.unpin()
-    if (result == 0) {
-      val error = HermesContext_getLastError(contextPointer)
-      throw UnsupportedOperationException(error?.toKString() ?: "Execution failed")
-    }
-    return null
+    return tagged.useContents { toAny("Execution failed") }
   }
 
   actual fun gc() {
@@ -282,6 +292,12 @@ actual class JsEngine private constructor(
 
   internal actual fun getInboundChannel(): CallChannel {
     checkNotClosed()
+    if (HermesContext_hasGlobalObject(contextPointer, INBOUND_CHANNEL_NAME) != 1) {
+      throw IllegalStateException(
+        "A global JavaScript object called $INBOUND_CHANNEL_NAME was not found. " +
+          "Try confirming that Zipline.get() has been called."
+      )
+    }
     return object : CallChannel {
       override fun call(callJson: String): String {
         checkNotClosed()
@@ -292,7 +308,7 @@ actual class JsEngine private constructor(
         )
         if (resultPtr == null) {
           val error = HermesContext_getLastError(contextPointer)
-          throw UnsupportedOperationException(error?.toKString() ?: "Failed to call inbound channel")
+          throw JsException(error?.toKString() ?: "Failed to call inbound channel")
         }
         val resultStr = resultPtr.toKString()
         platform.posix.free(resultPtr)
@@ -308,7 +324,7 @@ actual class JsEngine private constructor(
         )
         if (resultPtr == null) {
           val error = HermesContext_getLastError(contextPointer)
-          throw UnsupportedOperationException(error?.toKString() ?: "Failed to call inbound disconnect")
+          throw JsException(error?.toKString() ?: "Failed to call inbound disconnect")
         }
         val resultStr = resultPtr.toKString()
         platform.posix.free(resultPtr)

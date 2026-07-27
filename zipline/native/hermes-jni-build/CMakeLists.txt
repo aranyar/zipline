@@ -212,8 +212,9 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
   # When producing a static archive we do not need an Apple framework.
   if(HERMES_IOS_STATIC)
     set(HERMES_BUILD_APPLE_FRAMEWORK OFF)
-    # The static umbrella archive path only wires up the lean archive today.
-    set(HERMESVM_LEAN ON CACHE BOOL "" FORCE)
+    # compile()/evaluate() must work on iOS (dev-mode loadJsModule and the
+    # host test suite compile JS on-device), so the static archive is built
+    # non-lean. Set -DHERMESVM_LEAN=ON to trade that for ~1 MB smaller klibs.
   else()
     set(HERMES_BUILD_APPLE_FRAMEWORK ON)
   endif()
@@ -257,8 +258,15 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
       set_target_properties(hermesvmlean PROPERTIES EXCLUDE_FROM_ALL TRUE)
     endif()
 
+    if(HERMESVM_LEAN)
+      set(_HERMES_VM_A      "${_hermes_subdir}/lib/libhermesvmlean_a.a")
+      set(_HERMES_VM_TARGET hermesvmlean_a)
+    else()
+      set(_HERMES_VM_A      "${_hermes_subdir}/lib/libhermesvm_a.a")
+      set(_HERMES_VM_TARGET hermesvm_a)
+    endif()
+
     set(_HERMES_IOS_STATIC_OUT "${CMAKE_CURRENT_BINARY_DIR}/libhermesvm.a")
-    set(_HERMES_VM_A      "${_hermes_subdir}/lib/libhermesvmlean_a.a")
     set(_JSI_A            "${_hermes_subdir}/jsi/libjsi.a")
     set(_BOOST_CTX_A      "${_hermes_subdir}/external/boost/boost_1_86_0/libs/context/libboost_context.a")
     set(_HERMES_EXPORTS   "${CMAKE_CURRENT_SOURCE_DIR}/../hermes-ios.exports")
@@ -287,7 +295,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
         "${_BOOST_CTX_A}"
       COMMAND strip -u -x -S "${_PRELINKED_O}"
       COMMAND libtool -static -o "${_HERMES_IOS_STATIC_OUT}" "${_PRELINKED_O}"
-      DEPENDS zipline_ios_glue hermesvmlean_a jsi boost_context "${_HERMES_EXPORTS}"
+      DEPENDS zipline_ios_glue ${_HERMES_VM_TARGET} jsi boost_context "${_HERMES_EXPORTS}"
       COMMENT "Merging + prelinking iOS static archive for embedding in klib"
       VERBATIM
     )

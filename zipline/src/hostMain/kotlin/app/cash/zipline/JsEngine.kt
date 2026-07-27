@@ -56,8 +56,10 @@ expect class JsEngine : AutoCloseable {
   var maxStackSize: Long
 
   /**
-   * Evaluate [script] and return any result. [fileName] will be used in error
-   * reporting.
+   * Evaluate [script] and return the result as a scalar (Int, Double,
+   * String, or null for undefined/null/other kinds). Richer values cross
+   * the JS/host boundary via call channels (and [getGlobalProperty] for
+   * strings).
    *
    * @throws JsException if there is an error evaluating the script.
    */
@@ -72,8 +74,9 @@ expect class JsEngine : AutoCloseable {
   fun compile(sourceCode: String, fileName: String, sourceMap: String? = null): ByteArray
 
   /**
-   * Load and execute [bytecode] and return the result. [fileName] will be used
-   * in error reporting.
+   * Load and execute [bytecode] and return the result as a scalar (Int,
+   * Double, String, or null for undefined/null/other kinds). [fileName]
+   * will be used in error reporting.
    *
    * @throws JsException if there is an error loading or executing the code.
    */

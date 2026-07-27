@@ -40,6 +40,18 @@ int HermesCore_initContext(ContextBase* ctx) {
     return 0;
   }
   ctx->runtime = std::move(runtime);
+
+  // Install a global `gc()` helper mirroring the QuickJS JS_AddGlobalThisGc
+  // shim. Hermes has no built-in JS-visible gc function in the runtime.
+  jsi::Runtime& rt = *ctx->runtime;
+  rt.global().setProperty(
+      rt, "gc",
+      jsi::Function::createFromHostFunction(
+          rt, jsi::PropNameID::forUtf8(rt, "gc"), 0,
+          [](jsi::Runtime& rt2, const jsi::Value&, const jsi::Value*, size_t) -> jsi::Value {
+            rt2.instrumentation().collectGarbage("host_global_gc");
+            return jsi::Value::undefined();
+          }));
   return 1;
 }
 
@@ -93,27 +105,6 @@ void* HermesCore_getRuntime(void* context) {
   if (!context) return nullptr;
   ContextBase* ctx = static_cast<ContextBase*>(context);
   return ctx->runtime.get();
-}
-
-int HermesCore_execute(void* context, const uint8_t* bytecode, size_t bytecodeSize, const char* sourceURL, char** errorOut) {
-  ContextBase* ctx = static_cast<ContextBase*>(context);
-  if (!ctx || !ctx->runtime) {
-    if (errorOut) *errorOut = strdup("Invalid context");
-    return 0;
-  }
-  try {
-    HermesCore_evaluateBytecode(
-        ctx, bytecode, bytecodeSize, sourceURL ? sourceURL : "zipline-module.js");
-  } catch (const jsi::JSError& e) {
-    ctx->lastError = e.getMessage();
-    if (errorOut) *errorOut = strdup(ctx->lastError.c_str());
-    return 0;
-  } catch (const std::exception& e) {
-    ctx->lastError = e.what();
-    if (errorOut) *errorOut = strdup(ctx->lastError.c_str());
-    return 0;
-  }
-  return 1;
 }
 
 int HermesCore_compile(void* context,
@@ -171,24 +162,17 @@ int HermesCore_compile(void* context,
 #endif // HERMESVM_LEAN
 }
 
-int HermesCore_evaluate(void* context, const char* code, size_t codeSize, const char* sourceURL, char** errorOut) {
+
+
+int HermesCore_hasGlobalObject(void* context, const char* name) {
   ContextBase* ctx = static_cast<ContextBase*>(context);
-  if (!ctx || !ctx->runtime) {
-    if (errorOut) *errorOut = strdup("Invalid context");
+  if (!ctx || !ctx->runtime || !name) {
     return 0;
   }
-
   try {
-    // Honor codeSize so sources with embedded NUL bytes are not truncated;
-    // callers that don't know the length pass 0 and get strlen semantics.
-    std::string source(code, codeSize > 0 ? codeSize : strlen(code));
-    ctx->runtime->evaluateJavaScript(
-        std::make_unique<jsi::StringBuffer>(std::move(source)),
-        sourceURL ? sourceURL : "<eval>");
-    return 1;
-  } catch (const std::exception& e) {
-    ctx->lastError = e.what();
-    if (errorOut) *errorOut = strdup(e.what());
+    jsi::Runtime& rt = *ctx->runtime;
+    return rt.global().getProperty(rt, name).isObject() ? 1 : 0;
+  } catch (...) {
     return 0;
   }
 }

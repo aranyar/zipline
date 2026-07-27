@@ -15,11 +15,12 @@
  */
 package app.cash.zipline
 
+import app.cash.zipline.internal.bridge.CallChannel
+import app.cash.zipline.internal.bridge.OUTBOUND_CHANNEL_NAME
 import assertk.assertThat
 import assertk.assertions.startsWith
 import kotlin.test.AfterTest
 import kotlin.test.Test
-import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
@@ -60,9 +61,29 @@ class HermesTest {
     assertNull(jsEngine.evaluate("undefined;"))
     assertNull(jsEngine.evaluate("null;"))
 
-    assertContentEquals(
-      arrayOf("test", true, false, 1, 1.123, null, null),
-      jsEngine.evaluate("""["test", true, false, 1, 1.123, undefined, null];""") as Array<Any?>,
+    // Arrays/objects don't fit the tagged-scalar return; they cross
+    // through the outbound call channel (the production marshalling path).
+    val received = mutableListOf<String>()
+    jsEngine.initOutboundChannel(
+      object : CallChannel {
+        override fun call(callJson: String): String {
+          received += callJson
+          return callJson
+        }
+
+        override fun disconnect(instanceName: String): Boolean = true
+      },
+    )
+
+    jsEngine.evaluate(
+      """
+      |globalThis.$OUTBOUND_CHANNEL_NAME.call(JSON.stringify(["test", true, false, 1, 1.123, undefined, null]));
+      """.trimMargin(),
+    )
+
+    assertEquals(
+      listOf("""["test",true,false,1,1.123,null,null]"""),
+      received,
     )
   }
 

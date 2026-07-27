@@ -29,8 +29,6 @@ _HermesCore_compile
 _HermesCore_createContext
 _HermesCore_deleteGlobalProperty
 _HermesCore_destroyContext
-_HermesCore_evaluate
-_HermesCore_execute
 _HermesCore_gc
 _HermesCore_getGlobalProperty
 _HermesCore_getLastError
@@ -47,3 +45,5 @@ _HermesRuntime_create
 _HermesRuntime_destroy
 _HermesRuntime_getJsiRuntime
 _js_register_intrinsics
+_HermesContext_hasGlobalObject
+_HermesCore_hasGlobalObject
