@@ -9,7 +9,6 @@ include(":zipline-kotlin-plugin")
 include(":zipline-kotlin-plugin-tests")
 include(":zipline-loader")
 include(":zipline-loader-testing")
-include(":zipline-profiler")
 include(":zipline-testing")
 include(":intrinsic-tests")
 
