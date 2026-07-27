@@ -24,6 +24,8 @@
 #ifdef __cplusplus
 
 #include <hermes/hermes.h>
+#include <hermes/Public/GCConfig.h>
+#include <hermes/Public/RuntimeConfig.h>
 
 #include <memory>
 #include <string>
@@ -46,6 +48,23 @@ struct HermesCoreContext {
 // Initialize/release a caller-allocated context (returns 1 on success).
 int HermesCore_initContext(HermesCoreContext* ctx);
 void HermesCore_releaseContext(HermesCoreContext* ctx);
+
+// The single source of the Zipline runtime configuration: hardened Hermes
+// config with ES6Proxy re-enabled (Kotlin/JS stdlib needs Reflect.construct)
+// and the GC settings from HermesCore_makeGCConfig.
+// Platform layers chain .rebuild() to add their own knobs.
+hermes::vm::RuntimeConfig HermesCore_makeRuntimeConfig();
+
+// The shared GC configuration: 32 MB initial heap, 3 GB max heap, stats
+// recorded (heap stats feed memoryUsage()).
+hermes::vm::GCConfig HermesCore_makeGCConfig();
+
+// Evaluate precompiled Hermes bytecode and return the result value.
+// Throws jsi::JSError on script errors, std::exception on engine errors.
+facebook::jsi::Value HermesCore_evaluateBytecode(HermesCoreContext* ctx,
+                                                 const uint8_t* bytecode,
+                                                 size_t bytecodeSize,
+                                                 const std::string& sourceURL);
 
 extern "C" {
 #endif

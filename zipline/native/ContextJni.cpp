@@ -24,7 +24,6 @@
 #include <android/log.h>
 #endif
 
-#include <hermes/CompileJS.h>
 #include <hermes/Public/GCConfig.h>
 #include <hermes/Public/RuntimeConfig.h>
 #include <hermes/hermes.h>
@@ -87,7 +86,6 @@ ContextJni::ContextJni(JNIEnv* env)
       // Default runtime config is built in the body; member init-list can't
       // chain the .withX(...) builder calls.
       runtimeConfig(),
-      gcConfig(),
       booleanClass(findClassOrNull(env, "java/lang/Boolean")),
       integerClass(findClassOrNull(env, "java/lang/Integer")),
       doubleClass(findClassOrNull(env, "java/lang/Double")),
@@ -122,29 +120,19 @@ ContextJni::ContextJni(JNIEnv* env)
   jsExceptionConstructor = getInstanceMethod(
       jsExceptionClass, "<init>", "(Ljava/lang/String;Ljava/lang/String;)V");
 
-  // 32 MB initial heap, 3 GB max heap, eval disabled (security).
-  // ES6Proxy is enabled because the Kotlin/JS stdlib uses Reflect.construct
-  // (in kotlin.js.createSubclass), which Hermes only exposes with ES6Proxy.
-  gcConfig = hermes_vm::GCConfig()
-                .rebuild()
-                .withInitHeapSize(32u << 20)
-                .withMaxHeapSize(3u << 30)
-                .withShouldRecordStats(true)
-                .build();
-  runtimeConfig = hermes_vm::RuntimeConfig()
-                      .rebuild()
-                      .withEnableEval(false)
-                      .withES6Proxy(true)
-                      .withGCConfig(gcConfig)
-                      .build();
+  // Shared Zipline runtime + GC config (hardened + ES6Proxy, 32 MB initial
+  // heap, 3 GB max — see hermes-core.cpp). Kept as a member because
+  // memoryUsage() reports the configured heap sizes.
+  runtimeConfig = HermesCore_makeRuntimeConfig();
 
-  hermesRuntime = facebook::hermes::makeHermesRuntime(runtimeConfig);
+  auto hermesRuntime = facebook::hermes::makeHermesRuntime(runtimeConfig);
   if (!hermesRuntime) {
     throwJavaException(env, "java/lang/OutOfMemoryError",
                        "Cannot create HermesRuntime");
     throw std::runtime_error("makeHermesRuntime returned null");
   }
-  runtime = hermesRuntime.get();
+  core.runtime = std::move(hermesRuntime);
+  runtime = core.runtime.get();
 
   // Register JS intrinsics (IntSet/ScatterSet/ScatterMap/etc.) that back the
   // kotlinx.collections fast paths in Kotlin/JS. These are called from
@@ -181,7 +169,7 @@ ContextJni::~ContextJni() {
     if (booleanClass) env->DeleteGlobalRef(booleanClass);
     if (pendingJavaException) env->DeleteGlobalRef(pendingJavaException);
   }
-  // hermesRuntime (unique_ptr) is destroyed automatically.
+  // core (owning the runtime) is destroyed automatically after the body.
 }
 
 jobject ContextJni::execute(JNIEnv* env, jbyteArray byteCode, jstring fileName) {
@@ -194,19 +182,7 @@ jobject ContextJni::execute(JNIEnv* env, jbyteArray byteCode, jstring fileName) 
 
   jsi::Value result;
   try {
-    // jsi::Buffer is the protocol expected by prepareJavaScript. We adapt
-    // our owned std::vector via a tiny lambda-backed Buffer subclass.
-    class VecBuffer : public jsi::Buffer {
-     public:
-      explicit VecBuffer(std::vector<uint8_t> v) : v_(std::move(v)) {}
-      size_t size() const override { return v_.size(); }
-      const uint8_t* data() const override { return v_.data(); }
-     private:
-      std::vector<uint8_t> v_;
-    };
-    auto bytecodeBuf = std::make_shared<VecBuffer>(std::move(buf));
-    auto prepared = runtime->prepareJavaScript(bytecodeBuf, fileNameStr);
-    result = runtime->evaluatePreparedJavaScript(prepared);
+    result = HermesCore_evaluateBytecode(&core, buf.data(), buf.size(), fileNameStr);
   } catch (const jsi::JSError& e) {
     #ifdef __ANDROID__
     __android_log_print(ANDROID_LOG_ERROR, "JSI", "execute: JSError: %s", e.getMessage().c_str());
@@ -232,34 +208,29 @@ jbyteArray ContextJni::compile(JNIEnv* env, jstring source, jstring file,
 #else
   std::string src = toCppString(env, source);
   std::string filename = toCppString(env, file);
-  std::optional<std::string> sourceMapBuf = std::nullopt;
-  if (sourceMap != nullptr) {
-    sourceMapBuf = toCppString(env, sourceMap);
-  }
+  std::string sourceMapStr = sourceMap != nullptr ? toCppString(env, sourceMap) : std::string();
 
-  std::string bytecode;
-  bool ok = false;
-  try {
-    ok = hermes::compileJS(
-        src,
-        filename,
-        bytecode,
-        /*optimize=*/true,
-        /*emitAsyncBreakCheck=*/false,
-        /*diagHandler=*/nullptr,
-        sourceMapBuf);
-  } catch (const std::exception& e) {
-    throwJsExceptionFmt(env, this, "compileJS threw: %s", e.what());
-    return nullptr;
-  }
+  uint8_t* bytecodeOut = nullptr;
+  size_t bytecodeSize = 0;
+  char* error = nullptr;
+  int ok = HermesCore_compile(
+      &core,
+      src.c_str(),
+      filename.c_str(),
+      sourceMap != nullptr ? sourceMapStr.c_str() : nullptr,
+      &bytecodeOut,
+      &bytecodeSize,
+      &error);
   if (!ok) {
-    throwJsExceptionFmt(env, this, "Failed to compile JavaScript");
+    throwJsExceptionFmt(env, this, "%s", error ? error : "Failed to compile JavaScript");
+    free(error);
     return nullptr;
   }
 
-  jbyteArray result = env->NewByteArray(static_cast<jsize>(bytecode.size()));
-  env->SetByteArrayRegion(result, 0, static_cast<jsize>(bytecode.size()),
-                          reinterpret_cast<const jbyte*>(bytecode.data()));
+  jbyteArray result = env->NewByteArray(static_cast<jsize>(bytecodeSize));
+  env->SetByteArrayRegion(result, 0, static_cast<jsize>(bytecodeSize),
+                          reinterpret_cast<const jbyte*>(bytecodeOut));
+  delete[] bytecodeOut;
   return result;
 #endif
 }
@@ -308,7 +279,7 @@ jobject ContextJni::memoryUsage(JNIEnv* env) {
 }
 
 void ContextJni::gc(JNIEnv* /*env*/) {
-  runtime->instrumentation().collectGarbage("explicit");
+  HermesCore_gc(&core);
 }
 
 InboundCallChannel* ContextJni::getInboundCallChannel(JNIEnv* env, jstring name) {

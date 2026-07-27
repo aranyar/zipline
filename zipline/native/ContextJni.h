@@ -18,21 +18,13 @@
 
 #include "ContextBase.h"
 #include "RdmaChange.h"
+#include "hermes-core.h"
 
 #include <jni.h>
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
-
-#include <hermes/hermes.h>
-#include <jsi/jsi.h>
-
-namespace facebook {
-namespace hermes {
-class HermesRuntime;
-}
-}  // namespace facebook
 
 namespace jsi = facebook::jsi;
 namespace hermes_vm = hermes::vm;
@@ -82,15 +74,15 @@ class ContextJni : public ContextBase {
   JavaVM* javaVm;
   const jint jniVersion;
 
-  // The JSI runtime. Held as a raw pointer because HermesRuntime's lifetime
-  // is bound to the Context's. The unique_ptr lives on this object.
-  std::unique_ptr<facebook::hermes::HermesRuntime> hermesRuntime;
+  // The JSI runtime, owned by `core` (shared with the hermes-core C API so
+  // the duplicated engine glue can delegate to HermesCore_* functions).
+  // `runtime` is a raw pointer bound to core.runtime's lifetime.
+  HermesCoreContext core;
   facebook::jsi::Runtime* runtime;
 
-  // Hermes runtime configuration snapshot — used by setters (memory limit, etc.)
-  // to build a new RuntimeConfig when applying changes.
+  // Hermes runtime configuration snapshot (shared Zipline defaults from
+  // HermesCore_makeRuntimeConfig) — memoryUsage() reports its heap sizes.
   hermes::vm::RuntimeConfig runtimeConfig;
-  hermes::vm::GCConfig gcConfig;
 
   // ----- Cached JNI method / class refs.
   jclass booleanClass;

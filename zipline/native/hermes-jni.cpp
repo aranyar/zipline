@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 #include <jni.h>
-#include <optional>
+#include <cstdlib>
 #include <new>
 #ifdef __ANDROID__
 #include <android/log.h>
@@ -192,333 +192,148 @@ Java_app_cash_zipline_JniCallChannel_disconnect(JNIEnv* env, jobject /*thiz*/,
   return channel->disconnect(ctx, jstringToCppString(env, instanceName)) ? JNI_TRUE : JNI_FALSE;
 }
 
-namespace {
-// Helper to get a C++ string from jstring
-std::string toCppString(JNIEnv* env, jstring javaString) {
-  return zipline::jniStringToUtf8(env, javaString);
-}
-} // namespace
-
 extern "C" JNIEXPORT jstring JNICALL
 Java_app_cash_zipline_JsEngine_getGlobalProperty(JNIEnv* env, jobject /*thiz*/,
                                                   jlong _context, jstring name) {
-  ContextJni* ctx = reinterpret_cast<ContextJni*>(_context);
-  if (!ctx || !ctx->runtime) {
-    throwJavaException(env, "java/lang/IllegalStateException", "Hermes not initialized");
+  ContextJni* ctx = toContext(_context);
+  if (!ctx) {
+    throwJavaException(env, "java/lang/IllegalStateException",
+                       "JsEngine instance was closed");
     return nullptr;
   }
-  jsi::Runtime& rt = *ctx->runtime;
-  std::string propName = toCppString(env, name);
-  jsi::Value val = rt.global().getProperty(rt, propName.c_str());
-  if (val.isString()) {
-    return zipline::utf8ToJniString(env, val.asString(rt).utf8(rt));
+  std::string propName = jstringToCppString(env, name);
+  char* value = nullptr;
+  char* error = nullptr;
+  if (!HermesCore_getGlobalProperty(&ctx->core, propName.c_str(), &value, &error)) {
+    // Not present or not a string (previous behavior), or an engine error.
+    if (error) {
+      throwJavaException(env, "java/lang/IllegalStateException", "%s", error);
+      free(error);
+    }
+    return nullptr;
   }
-  return nullptr;
+  jstring result = value ? zipline::utf8ToJniString(env, value) : nullptr;
+  free(value);
+  return result;
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_app_cash_zipline_JsEngine_setGlobalProperty(JNIEnv* env, jobject /*thiz*/,
                                                   jlong _context, jstring name,
                                                   jstring value) {
-  ContextJni* ctx = reinterpret_cast<ContextJni*>(_context);
-  if (!ctx || !ctx->runtime) {
+  ContextJni* ctx = toContext(_context);
+  if (!ctx) {
+    throwJavaException(env, "java/lang/IllegalStateException",
+                       "JsEngine instance was closed");
     return;
   }
-  jsi::Runtime& rt = *ctx->runtime;
-  std::string propName = toCppString(env, name);
-  std::string propValue = toCppString(env, value);
-  rt.global().setProperty(rt, propName.c_str(),
-    jsi::String::createFromUtf8(rt, propValue));
+  std::string propName = jstringToCppString(env, name);
+  std::string propValue = jstringToCppString(env, value);
+  char* error = nullptr;
+  if (!HermesCore_setGlobalProperty(&ctx->core, propName.c_str(), propValue.c_str(), &error)) {
+    throwJavaException(env, "java/lang/IllegalStateException", "%s",
+                       error ? error : "setGlobalProperty failed");
+    free(error);
+  }
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_app_cash_zipline_JsEngine_deleteGlobalProperty(JNIEnv* env, jobject /*thiz*/,
                                                      jlong _context, jstring name) {
-  ContextJni* ctx = reinterpret_cast<ContextJni*>(_context);
-  if (!ctx || !ctx->runtime) {
+  ContextJni* ctx = toContext(_context);
+  if (!ctx) {
+    throwJavaException(env, "java/lang/IllegalStateException",
+                       "JsEngine instance was closed");
     return;
   }
-  jsi::Runtime& rt = *ctx->runtime;
-  std::string propName = toCppString(env, name);
-  rt.global().setProperty(rt, propName.c_str(), jsi::Value::undefined());
+  std::string propName = jstringToCppString(env, name);
+  char* error = nullptr;
+  if (!HermesCore_deleteGlobalProperty(&ctx->core, propName.c_str(), &error)) {
+    throwJavaException(env, "java/lang/IllegalStateException", "%s",
+                       error ? error : "deleteGlobalProperty failed");
+    free(error);
+  }
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_app_cash_zipline_JsEngine_callGlobalMethod(JNIEnv* env, jobject /*thiz*/,
                                                   jlong _context, jstring objectName,
                                                   jstring methodName) {
-  ContextJni* ctx = reinterpret_cast<ContextJni*>(_context);
-  if (!ctx || !ctx->runtime) {
-    throwJavaException(env, "java/lang/IllegalStateException", "Hermes not initialized");
+  ContextJni* ctx = toContext(_context);
+  if (!ctx) {
+    throwJavaException(env, "java/lang/IllegalStateException",
+                       "JsEngine instance was closed");
     return;
   }
-  jsi::Runtime& rt = *ctx->runtime;
-  std::string objName = toCppString(env, objectName);
-  std::string mtdName = toCppString(env, methodName);
-
-  // Get require(moduleId)
-  jsi::Value requireVal = rt.global().getProperty(rt, "require");
-  if (!requireVal.isObject() || !requireVal.asObject(rt).isFunction(rt)) {
-    throwJavaException(env, "java/lang/IllegalStateException", "require not found");
-    return;
+  std::string objName = jstringToCppString(env, objectName);
+  std::string mtdName = jstringToCppString(env, methodName);
+  char* error = nullptr;
+  if (!HermesCore_callGlobalMethod(&ctx->core, objName.c_str(), mtdName.c_str(), &error)) {
+    throwJavaException(env, "java/lang/IllegalStateException", "%s",
+                       error ? error : "callGlobalMethod failed");
+    free(error);
   }
-
-  // Call require(moduleId)
-  jsi::Value exports = requireVal.asObject(rt).asFunction(rt).call(
-    rt, jsi::String::createFromUtf8(rt, objName), 1);
-
-  if (!exports.isObject()) {
-    throwJavaException(env, "java/lang/IllegalStateException", "module exports not an object");
-    return;
-  }
-
-  // Get method on exports
-  jsi::Object exportsObj = exports.asObject(rt);
-  jsi::Value method = exportsObj.getProperty(rt, mtdName.c_str());
-  if (!method.isObject() || !method.asObject(rt).isFunction(rt)) {
-    throwJavaException(env, "java/lang/IllegalStateException", "method not found");
-    return;
-  }
-
-  // Call method
-  method.asObject(rt).asFunction(rt).call(rt, nullptr, 0);
 }
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_app_cash_zipline_JsEngine_callGlobalFunctionWithStringArg(JNIEnv* env, jobject /*thiz*/,
                                                                   jlong _context, jstring functionName,
                                                                   jstring arg) {
-  ContextJni* ctx = reinterpret_cast<ContextJni*>(_context);
-  if (!ctx || !ctx->runtime) {
-    throwJavaException(env, "java/lang/IllegalStateException", "Hermes not initialized");
+  ContextJni* ctx = toContext(_context);
+  if (!ctx) {
+    throwJavaException(env, "java/lang/IllegalStateException",
+                       "JsEngine instance was closed");
     return nullptr;
   }
-  jsi::Runtime& rt = *ctx->runtime;
-  std::string fnName = toCppString(env, functionName);
-  std::string argStr = toCppString(env, arg);
-
-  jsi::Value fnVal = rt.global().getProperty(rt, fnName.c_str());
-  if (!fnVal.isObject() || !fnVal.asObject(rt).isFunction(rt)) {
-    throwJavaException(env, "java/lang/IllegalStateException", "function not found");
+  std::string fnName = jstringToCppString(env, functionName);
+  std::string argStr = jstringToCppString(env, arg);
+  char* resultOut = nullptr;
+  char* error = nullptr;
+  if (!HermesCore_callGlobalFunctionWithStringArg(
+          &ctx->core, fnName.c_str(), argStr.c_str(), &resultOut, &error)) {
+    throwJavaException(env, "java/lang/IllegalStateException", "%s",
+                       error ? error : "callGlobalFunctionWithStringArg failed");
+    free(error);
     return nullptr;
   }
-
-  jsi::Value result = fnVal.asObject(rt).asFunction(rt).call(
-    rt, jsi::String::createFromUtf8(rt, argStr), 1);
-
-  if (result.isString()) {
-    return zipline::utf8ToJniString(env, result.asString(rt).utf8(rt));
-  }
-  return nullptr;
+  jstring result = resultOut ? zipline::utf8ToJniString(env, resultOut) : nullptr;
+  free(resultOut);
+  return result;
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_app_cash_zipline_JsEngine_callRequireMethod(JNIEnv* env, jobject /*thiz*/,
                                                    jlong _context, jstring moduleId,
                                                    jstring methodName) {
-  ContextJni* ctx = reinterpret_cast<ContextJni*>(_context);
-  if (!ctx || !ctx->runtime) {
-    throwJavaException(env, "java/lang/IllegalStateException", "Hermes not initialized");
+  ContextJni* ctx = toContext(_context);
+  if (!ctx) {
+    throwJavaException(env, "java/lang/IllegalStateException",
+                       "JsEngine instance was closed");
     return;
   }
-  jsi::Runtime& rt = *ctx->runtime;
-  std::string modId = toCppString(env, moduleId);
-  std::string mtdName = toCppString(env, methodName);
-
-  jsi::Value requireVal = rt.global().getProperty(rt, "require");
-  if (!requireVal.isObject() || !requireVal.asObject(rt).isFunction(rt)) {
-    throwJavaException(env, "java/lang/IllegalStateException", "require not found");
-    return;
-  }
-
-  jsi::Value exports = requireVal.asObject(rt).asFunction(rt).call(
-    rt, jsi::String::createFromUtf8(rt, modId), 1);
-
-  if (exports.isUndefined()) {
-    throwJavaException(env, "java/lang/IllegalStateException", "module exports undefined");
-    return;
-  }
-
-  if (!exports.isObject()) {
-    throwJavaException(env, "java/lang/IllegalStateException", "module exports not an object");
-    return;
-  }
-
-  // Split mtdName by '.' and traverse the object hierarchy
-  // e.g., "io.clive.wb.services.wbRootMain" -> exports['io']['clive']['wb']['services']['wbRootMain']
-  jsi::Value current = jsi::Value(rt, exports.asObject(rt));
-  size_t start = 0;
-  for (size_t i = 0; i <= mtdName.length(); i++) {
-    if (i == mtdName.length() || mtdName[i] == '.') {
-      std::string part = mtdName.substr(start, i - start);
-      if (!current.isObject()) {
-        throwJavaException(env, "java/lang/IllegalStateException", "property path traversal failed");
-        return;
-      }
-      current = current.asObject(rt).getProperty(rt, part.c_str());
-      if (i == mtdName.length()) {
-        if (!current.isObject() || !current.asObject(rt).isFunction(rt)) {
-          throwJavaException(env, "java/lang/IllegalStateException", "method not found");
-          return;
-        }
-        jsi::Function methodFn = current.asObject(rt).asFunction(rt);
-        methodFn.call(rt, nullptr, 0);
-        return;
-      }
-      start = i + 1;
-    }
+  std::string modId = jstringToCppString(env, moduleId);
+  std::string mtdName = jstringToCppString(env, methodName);
+  char* error = nullptr;
+  if (!HermesCore_callRequireMethod(&ctx->core, modId.c_str(), mtdName.c_str(), &error)) {
+    throwJavaException(env, "java/lang/IllegalStateException", "%s",
+                       error ? error : "callRequireMethod failed");
+    free(error);
   }
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_app_cash_zipline_JsEngine_installModuleLoader(JNIEnv* env, jobject /*thiz*/,
-                                                  jlong _context) {
-  ContextJni* ctx = reinterpret_cast<ContextJni*>(_context);
-  if (!ctx || !ctx->runtime) {
-    throwJavaException(env, "java/lang/IllegalStateException", "Hermes not initialized");
+                                                   jlong _context) {
+  ContextJni* ctx = toContext(_context);
+  if (!ctx) {
+    throwJavaException(env, "java/lang/IllegalStateException",
+                       "JsEngine instance was closed");
     return;
   }
-  jsi::Runtime& rt = *ctx->runtime;
-
-  // idToExports storage - store as a property on global object
-  jsi::Object idToExportsObj(rt);
-  rt.global().setProperty(rt, "app_cash_zipline_idToExports", idToExportsObj);
-
-  // require(id) function
-  auto requireFn = jsi::Function::createFromHostFunction(
-    rt,
-    jsi::PropNameID::forUtf8(rt, "require"),
-    1,
-    [&rt](jsi::Runtime& runtime, const jsi::Value& thisVal, const jsi::Value* args, size_t count) -> jsi::Value {
-      if (count < 1 || !args[0].isString()) {
-        throw jsi::JSError(runtime, "require expects a string id");
-      }
-      std::string modId = args[0].asString(runtime).utf8(runtime);
-
-      jsi::Object idToExports = runtime.global().getProperty(runtime, "app_cash_zipline_idToExports").asObject(runtime);
-      jsi::Value exports = idToExports.getProperty(runtime, modId.c_str());
-
-      if (exports.isUndefined()) {
-        throw jsi::JSError(runtime, "\"" + modId + "\" not found");
-      }
-      return exports;
-    });
-  rt.global().setProperty(rt, "require", std::move(requireFn));
-
-  // define() function with AMD semantics
-  // globalThis.define(id?, dependencies?, factory)
-  auto defineFn = jsi::Function::createFromHostFunction(
-    rt,
-    jsi::PropNameID::forUtf8(rt, "define"),
-    0,
-    [&rt](jsi::Runtime& runtime, const jsi::Value& thisVal, const jsi::Value* args, size_t count) -> jsi::Value {
-      // Determine if first arg is an id (string) or deps (array) or factory
-      // AMD calling conventions:
-      //   define(id, deps, factory) - id is string
-      //   define(deps, factory) - deps is array
-      //   define(factory) - factory is function
-      //   define(id, factory) - id is string, no deps
-
-      std::string modId;
-      size_t factoryIndex = count - 1;
-      size_t depsIndex = SIZE_MAX;
-
-      if (count >= 2) {
-        if (args[count - 2].isObject() && args[count - 2].asObject(runtime).isArray(runtime)) {
-          depsIndex = count - 2;
-        } else if (args[count - 2].isString()) {
-          modId = args[count - 2].asString(runtime).utf8(runtime);
-        }
-      }
-
-      // define(id, deps, factory): the id is the leading string argument.
-      if (modId.empty() && count >= 1 && args[0].isString()) {
-        modId = args[0].asString(runtime).utf8(runtime);
-      }
-
-      if (modId.empty()) {
-        jsi::Value currentModId = runtime.global().getProperty(runtime, "app_cash_zipline_currentModuleId");
-        if (currentModId.isString()) {
-          modId = currentModId.asString(runtime).utf8(runtime);
-        }
-      }
-
-      if (count == 0) {
-        throw jsi::JSError(runtime, "define requires at least a factory function");
-      }
-
-      if (!args[factoryIndex].isObject() || !args[factoryIndex].asObject(runtime).isFunction(runtime)) {
-        throw jsi::JSError(runtime, "define last argument must be a factory function");
-      }
-      jsi::Function factoryFn = args[factoryIndex].asObject(runtime).asFunction(runtime);
-
-      // Handle dependencies if provided (depsIndex points to the array)
-      // Use aligned storage for Value array since jsi::Value can't be copied
-      size_t depCount = 0;
-      std::vector<unsigned char> depStorage;
-      jsi::Value* depArgs = nullptr;
-      // The exports object created for an "exports" dependency; the factory
-      // may populate it instead of returning a value.
-      std::optional<jsi::Object> factoryExports;
-
-      if (depsIndex != SIZE_MAX) {
-        jsi::Array deps = args[depsIndex].asObject(runtime).asArray(runtime);
-        depCount = deps.length(runtime);
-        depStorage.resize(depCount * sizeof(jsi::Value));
-        depArgs = reinterpret_cast<jsi::Value*>(depStorage.data());
-        jsi::Object idToExports = runtime.global().getProperty(runtime, "app_cash_zipline_idToExports").asObject(runtime);
-
-        for (size_t i = 0; i < depCount; i++) {
-          jsi::Value dep = deps.getValueAtIndex(runtime, i);
-          if (!dep.isString()) {
-            new(&depArgs[i]) jsi::Value(jsi::Value::undefined());
-            continue;
-          }
-          std::string depId = dep.asString(runtime).utf8(runtime);
-
-          if (depId == "exports") {
-            factoryExports.emplace(runtime);
-            new(&depArgs[i]) jsi::Value(runtime, *factoryExports);
-          } else if (depId == "require") {
-            new(&depArgs[i]) jsi::Value(runtime.global().getProperty(runtime, "require"));
-          } else {
-            jsi::Value depMod = idToExports.getProperty(runtime, depId.c_str());
-            if (depMod.isUndefined()) {
-              throw jsi::JSError(runtime, "\"" + depId + "\" not found");
-            }
-            new(&depArgs[i]) jsi::Value(std::move(depMod));
-          }
-        }
-      }
-
-      // Call the factory function - call runtime.call directly to avoid template issues
-      jsi::Value result = runtime.call(factoryFn, jsi::Value::undefined(), depArgs, depCount);
-
-      // Destroy placement-new'd values
-      for (size_t i = 0; i < depCount; i++) {
-        depArgs[i].~Value();
-      }
-
-      // Store exports by module id
-      if (!modId.empty()) {
-        jsi::Object idToExports = runtime.global().getProperty(runtime, "app_cash_zipline_idToExports").asObject(runtime);
-        if (result.isObject()) {
-          idToExports.setProperty(runtime, modId.c_str(), result);
-        } else if (factoryExports.has_value()) {
-          // CommonJS style: the factory populated the exports object it was
-          // given instead of returning a value.
-          idToExports.setProperty(runtime, modId.c_str(), *factoryExports);
-        } else {
-          idToExports.setProperty(runtime, modId.c_str(), jsi::Object(runtime));
-        }
-      }
-
-      return jsi::Value::undefined();
-    });
-  rt.global().setProperty(rt, "define", std::move(defineFn));
-
-  // Set define.amd = {} on the define function itself (required for UMD detection)
-  jsi::Object defineObj = rt.global().getProperty(rt, "define").asObject(rt);
-  jsi::Object amdObj(rt);
-  defineObj.setProperty(rt, "amd", amdObj);
+  char* error = nullptr;
+  if (!HermesCore_installModuleLoader(&ctx->core, &error)) {
+    throwJavaException(env, "java/lang/IllegalStateException", "%s",
+                       error ? error : "installModuleLoader failed");
+    free(error);
+  }
 }

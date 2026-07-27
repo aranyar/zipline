@@ -30,15 +30,28 @@
 
 namespace jsi = facebook::jsi;
 
-int HermesCore_initContext(HermesCoreContext* ctx) {
+hermes::vm::GCConfig HermesCore_makeGCConfig() {
+  return hermes::vm::GCConfig()
+      .rebuild()
+      .withInitHeapSize(32u << 20)
+      .withMaxHeapSize(3u << 30)
+      .withShouldRecordStats(true)
+      .build();
+}
+
+hermes::vm::RuntimeConfig HermesCore_makeRuntimeConfig() {
   // Kotlin/JS stdlib uses Reflect.construct (in kotlin.js.createSubclass),
   // which requires the global Reflect object. Hermes only exposes Reflect
   // when ES6Proxy is enabled, so we re-enable it on top of the hardened
   // config used by Zipline.
-  auto config = facebook::hermes::hardenedHermesRuntimeConfig().rebuild()
-                    .withES6Proxy(true)
-                    .build();
-  auto runtime = facebook::hermes::makeHermesRuntime(config);
+  return facebook::hermes::hardenedHermesRuntimeConfig().rebuild()
+      .withES6Proxy(true)
+      .withGCConfig(HermesCore_makeGCConfig())
+      .build();
+}
+
+int HermesCore_initContext(HermesCoreContext* ctx) {
+  auto runtime = facebook::hermes::makeHermesRuntime(HermesCore_makeRuntimeConfig());
   if (!runtime) {
     return 0;
   }
@@ -50,6 +63,28 @@ void HermesCore_releaseContext(HermesCoreContext* ctx) {
   if (ctx) {
     ctx->runtime.reset();
   }
+}
+
+jsi::Value HermesCore_evaluateBytecode(HermesCoreContext* ctx,
+                                       const uint8_t* bytecode,
+                                       size_t bytecodeSize,
+                                       const std::string& sourceURL) {
+  // Copy the bytecode into a vector so it remains valid for the lifetime
+  // of the prepared JavaScript and its subsequent evaluation.
+  std::vector<uint8_t> buf(bytecode, bytecode + bytecodeSize);
+  auto bufPtr = std::make_shared<std::vector<uint8_t>>(std::move(buf));
+  class VecBuffer : public jsi::Buffer {
+   public:
+    explicit VecBuffer(const std::shared_ptr<std::vector<uint8_t>>& v)
+        : v_(v) {}
+    size_t size() const override { return v_->size(); }
+    const uint8_t* data() const override { return v_->data(); }
+   private:
+    std::shared_ptr<std::vector<uint8_t>> v_;
+  };
+  auto buffer = std::make_shared<VecBuffer>(bufPtr);
+  auto prepared = ctx->runtime->prepareJavaScript(buffer, sourceURL);
+  return ctx->runtime->evaluatePreparedJavaScript(prepared);
 }
 
 extern "C" {
@@ -83,23 +118,8 @@ int HermesCore_execute(void* context, const uint8_t* bytecode, size_t bytecodeSi
     return 0;
   }
   try {
-    // Copy the bytecode into a vector so it remains valid for the lifetime
-    // of the prepared JavaScript and its subsequent evaluation.
-    std::vector<uint8_t> buf(bytecode, bytecode + bytecodeSize);
-    auto bufPtr = std::make_shared<std::vector<uint8_t>>(std::move(buf));
-    class VecBuffer : public jsi::Buffer {
-     public:
-      explicit VecBuffer(const std::shared_ptr<std::vector<uint8_t>>& v)
-          : v_(v) {}
-      size_t size() const override { return v_->size(); }
-      const uint8_t* data() const override { return v_->data(); }
-     private:
-      std::shared_ptr<std::vector<uint8_t>> v_;
-    };
-    auto buffer = std::make_shared<VecBuffer>(bufPtr);
-    const char* url = sourceURL ? sourceURL : "zipline-module.js";
-    auto prepared = ctx->runtime->prepareJavaScript(buffer, url);
-    ctx->runtime->evaluatePreparedJavaScript(prepared);
+    HermesCore_evaluateBytecode(
+        ctx, bytecode, bytecodeSize, sourceURL ? sourceURL : "zipline-module.js");
   } catch (const jsi::JSError& e) {
     ctx->lastError = e.getMessage();
     if (errorOut) *errorOut = strdup(ctx->lastError.c_str());
