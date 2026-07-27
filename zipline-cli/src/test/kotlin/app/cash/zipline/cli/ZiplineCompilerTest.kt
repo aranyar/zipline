@@ -58,10 +58,9 @@ class ZiplineCompilerTest {
     val exception = assertFailsWith<Exception> {
       jsEngine.evaluate("require('./hello.js').sayHello()", "test.js")
     }
-    // NOTE: with QuickJS the source map produced .kt frames here; Hermes does
-    // not apply the compile-time source map to runtime stack traces, so
-    // frames show the engine's internal name and no Kotlin line numbers.
-    // Hermes also inlines the small goBoom chain, leaving only sayHello.
+    // NOTE: Hermes's optimizer inlines the small goBoom chain, so only the
+    // sayHello frame survives, located at the throw site. The fixture source
+    // map marks the Error construction as generated glue, hence <js-code>.
     assertThat(exception.stackTraceToString()).startsWith(
       """
       |app.cash.zipline.JsException: boom!
@@ -72,8 +71,32 @@ class ZiplineCompilerTest {
   }
 
   @Test
-  fun `no source map`() {
-    val moduleNameToFile = compile("src/test/resources/happyPathNoSourceMap/", false)
+  fun `write to and read from zipline no inline`() {
+    val moduleNameToFile = compile("src/test/resources/happyPathNoInline/", true)
+    for ((moduleName, ziplineFile) in moduleNameToFile) {
+      loadJsModule(jsEngine, moduleName, ziplineFile.quickjsBytecode.toByteArray())
+    }
+
+    val exception = assertFailsWith<Exception> {
+      jsEngine.evaluate("require('./hello.js').sayHello()", "test.js")
+    }
+    // The goBoomN functions are too large to inline (and are kept alive via
+    // exports), so every frame survives and the source map remaps them all
+    // back to the original Kotlin source.
+    assertThat(exception.stackTraceToString()).startsWith(
+      """
+      |app.cash.zipline.JsException: boom!
+      |	at JavaScript.goBoom1(throwException.kt:27)
+      |	at JavaScript.goBoom2(throwException.kt:15)
+      |	at JavaScript.goBoom3(throwException.kt:7)
+      |	at JavaScript.sayHello(throwException.kt:3)
+      |
+      """.trimMargin(),
+    )
+  }
+
+  @Test
+  fun `no source map`() {    val moduleNameToFile = compile("src/test/resources/happyPathNoSourceMap/", false)
     for ((_, ziplineFile) in moduleNameToFile) {
       jsEngine.execute(ziplineFile.quickjsBytecode.toByteArray())
     }
