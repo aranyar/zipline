@@ -16,6 +16,7 @@
 
 #include "hermes-ios.h"
 #include "hermes-core.h"
+#include "../RdmaChange.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,17 +39,8 @@ static char g_lastError[1024];
 typedef void* (*OutboundCallChannelCallFn)(void* context, const char* callJson);
 typedef int (*OutboundCallChannelDisconnectFn)(void* context, const char* instanceName);
 
-// RDMA Changes support - per-context state
-struct RdmaChange {
-    int type;  // RdmaChangeType as int (0=Create, 1=PropertyChange, 2=ModifierChange, 3=Add, 4=Remove, 5=Move)
-    int id;
-    int field1;
-    int field2;
-    int field3;
-    int count;
-    bool detach;
-    std::shared_ptr<jsi::Value> jsValue;
-};
+// RdmaChange / RdmaChangeType / RDMA_BATCH_SIZE come from ../RdmaChange.h,
+// shared with the JNI layer.
 
 typedef void (*RdmaChangeSinkFn)(void* context);
 
@@ -329,7 +321,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
             }
             HermesIosContext* ctx = asIosContext(context);
             RdmaChange ch;
-            ch.type = 0; // Create
+            ch.type = RdmaChangeType::Create;
             ch.id = static_cast<int>(args[0].asNumber());
             ch.field1 = static_cast<int>(args[1].asNumber());
             ch.jsValue = nullptr;
@@ -347,7 +339,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
             }
             HermesIosContext* ctx = asIosContext(context);
             RdmaChange ch;
-            ch.type = 1; // PropertyChange
+            ch.type = RdmaChangeType::PropertyChange;
             ch.id = static_cast<int>(args[0].asNumber());
             ch.field1 = static_cast<int>(args[1].asNumber());
             ch.field2 = static_cast<int>(args[2].asNumber());
@@ -366,7 +358,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
             }
             HermesIosContext* ctx = asIosContext(context);
             RdmaChange ch;
-            ch.type = 2; // ModifierChange
+            ch.type = RdmaChangeType::ModifierChange;
             ch.id = static_cast<int>(args[0].asNumber());
             ch.jsValue = std::make_shared<jsi::Value>(runtime, args[1]);
             ctx->pendingChanges.push_back(std::move(ch));
@@ -383,7 +375,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
             }
             HermesIosContext* ctx = asIosContext(context);
             RdmaChange ch;
-            ch.type = 3; // Add
+            ch.type = RdmaChangeType::Add;
             ch.id = static_cast<int>(args[0].asNumber());
             ch.field1 = static_cast<int>(args[1].asNumber());
             ch.field2 = static_cast<int>(args[2].asNumber());
@@ -403,7 +395,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
             }
             HermesIosContext* ctx = asIosContext(context);
             RdmaChange ch;
-            ch.type = 4; // Remove
+            ch.type = RdmaChangeType::Remove;
             ch.id = static_cast<int>(args[0].asNumber());
             ch.field1 = static_cast<int>(args[1].asNumber());
             ch.field2 = static_cast<int>(args[2].asNumber());
@@ -431,7 +423,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
             int idx = static_cast<int>(args[0].asNumber());
             int removeOrdinal = 0;
             for (RdmaChange& ch : ctx->pendingChanges) {
-                if (ch.type != 4) continue; // Remove
+                if (ch.type != RdmaChangeType::Remove) continue;
                 if (removeOrdinal == idx) {
                     ch.detach = true;
                     break;
@@ -451,7 +443,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
             }
             HermesIosContext* ctx = asIosContext(context);
             RdmaChange ch;
-            ch.type = 5; // Move
+            ch.type = RdmaChangeType::Move;
             ch.id = static_cast<int>(args[0].asNumber());
             ch.field1 = static_cast<int>(args[1].asNumber());
             ch.field2 = static_cast<int>(args[2].asNumber());

@@ -17,6 +17,7 @@
 #define ZIPLINE_CONTEXT_JNI_H
 
 #include "ContextBase.h"
+#include "RdmaChange.h"
 
 #include <jni.h>
 #include <memory>
@@ -35,37 +36,6 @@ class HermesRuntime;
 
 namespace jsi = facebook::jsi;
 namespace hermes_vm = hermes::vm;
-
-// RDMA Changes support
-enum class RdmaChangeType {
-  Create,
-  PropertyChange,
-  ModifierChange,
-  Add,
-  Remove,
-  Move,
-};
-
-constexpr int RDMA_BATCH_SIZE = 2048;
-
-struct RdmaChange {
-  RdmaChangeType type;
-  int id;
-  int field1;    // tag (Create/Remove/Move), widgetTag (PropertyChange), childrenTag (Add)
-  int field2;    // propertyTag (PropertyChange), childId (Add), index (Remove), fromIndex (Move)
-  int field3;    // index (Add), toIndex (Move)
-  int count;     // count (Move only)
-  bool detach;   // detach flag (Remove only)
-  // jsi::Value has no copy ctor; we share ownership of the underlying JS
-  // value so it stays alive until the change is flushed to Java.
-  std::shared_ptr<jsi::Value> jsValue;
-
-  RdmaChange() = default;
-  RdmaChange(const RdmaChange&) = default;
-  RdmaChange& operator=(const RdmaChange&) = default;
-  RdmaChange(RdmaChange&&) = default;
-  RdmaChange& operator=(RdmaChange&&) = default;
-};
 
 class ContextJni : public ContextBase {
  public:
