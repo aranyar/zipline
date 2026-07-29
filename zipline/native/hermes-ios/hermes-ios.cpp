@@ -545,19 +545,11 @@ void HermesContext_gc(void* context) {
     }
 }
 
-int HermesContext_getMemoryUsage(void* context, HermesMemoryUsage* usageOut) {
+int HermesContext_getMemoryUsage(void* context, HermesCoreMemoryUsage* usageOut) {
     if (!context || !usageOut) {
         return 0;
     }
-
-    int64_t heapSize = 0, allocBytes = 0, gcCount = 0;
-    int success = HermesCore_getMemoryUsage(asNativeContext(context), &heapSize, &allocBytes, &gcCount);
-    if (success) {
-        usageOut->heapSize = heapSize;
-        usageOut->allocBytes = allocBytes;
-        usageOut->gcCount = gcCount;
-    }
-    return success;
+    return HermesCore_getMemoryUsage(asNativeContext(context), usageOut);
 }
 
 const char* Hermes_getVersion(void) {

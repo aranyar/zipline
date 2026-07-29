@@ -543,14 +543,26 @@ void HermesCore_gc(void* context) {
   }
 }
 
-int HermesCore_getMemoryUsage(void* context, int64_t* heapSizeOut, int64_t* allocBytesOut, int64_t* gcCountOut) {
+int HermesCore_getMemoryUsage(void* context, HermesCoreMemoryUsage* usageOut) {
   ContextBase* ctx = static_cast<ContextBase*>(context);
-  if (!ctx) {
+  if (!ctx || !ctx->runtime || !usageOut) {
     return 0;
   }
-  if (heapSizeOut) *heapSizeOut = 0;
-  if (allocBytesOut) *allocBytesOut = 0;
-  if (gcCountOut) *gcCountOut = 0;
+  const auto info = ctx->runtime->instrumentation().getHeapInfo(true);
+  auto get = [&info](const char* key) -> int64_t {
+    const auto it = info.find(key);
+    return it != info.end() ? it->second : 0;
+  };
+  usageOut->heapSize = get("hermes_heapSize");
+  usageOut->allocatedBytes = get("hermes_allocatedBytes");
+  usageOut->totalAllocatedBytes = get("hermes_totalAllocatedBytes");
+  usageOut->va = get("hermes_va");
+  usageOut->externalBytes = get("hermes_externalBytes");
+  usageOut->mallocSizeEstimate = get("hermes_mallocSizeEstimate");
+  usageOut->peakAllocatedBytes = get("hermes_peakAllocatedBytes");
+  usageOut->peakLiveAfterGC = get("hermes_peakLiveAfterGC");
+  usageOut->numCollections = get("hermes_numCollections");
+  usageOut->numMarkStackOverflows = get("hermes_numMarkStackOverflows");
   return 1;
 }
 

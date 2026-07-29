@@ -85,8 +85,23 @@ void HermesCore_setGcThreshold(void* context, int64_t thresholdBytes);
 void HermesCore_setMaxStackSize(void* context, int64_t maxSizeBytes);
 void HermesCore_gc(void* context);
 
-// Memory usage stats (all return 1 on success, 0 on failure)
-int HermesCore_getMemoryUsage(void* context, int64_t* heapSizeOut, int64_t* allocBytesOut, int64_t* gcCountOut);
+// Memory usage stats, mirroring facebook::jsi::Instrumentation::getHeapInfo
+// (the "hermes_*" keys returned by HermesRuntime).
+typedef struct HermesCoreMemoryUsage {
+  int64_t heapSize;             // hermes_heapSize: bytes reserved by the GC heap
+  int64_t allocatedBytes;       // hermes_allocatedBytes: live JS heap objects
+  int64_t totalAllocatedBytes;  // hermes_totalAllocatedBytes: cumulative allocations
+  int64_t va;                   // hermes_va: virtual address space of the heap
+  int64_t externalBytes;        // hermes_externalBytes: memory retained outside the heap
+  int64_t mallocSizeEstimate;   // hermes_mallocSizeEstimate (expensive to compute)
+  int64_t peakAllocatedBytes;   // hermes_peakAllocatedBytes
+  int64_t peakLiveAfterGC;      // hermes_peakLiveAfterGC
+  int64_t numCollections;       // hermes_numCollections
+  int64_t numMarkStackOverflows;// hermes_numMarkStackOverflows
+} HermesCoreMemoryUsage;
+
+// Returns 1 on success, 0 on failure.
+int HermesCore_getMemoryUsage(void* context, HermesCoreMemoryUsage* usageOut);
 
 // Version string
 const char* HermesCore_getVersion(void);

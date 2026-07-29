@@ -108,15 +108,8 @@ void HermesContext_setGcThreshold(void* context, int64_t thresholdBytes);
 void HermesContext_setMaxStackSize(void* context, int64_t maxStackSizeBytes);
 void HermesContext_gc(void* context);
 
-// Memory usage struct
-typedef struct HermesMemoryUsage {
-    int64_t heapSize;
-    int64_t allocBytes;
-    int64_t gcCount;
-} HermesMemoryUsage;
-
-// Memory usage
-int HermesContext_getMemoryUsage(void* context, HermesMemoryUsage* usageOut);
+// Memory usage (see HermesCoreMemoryUsage in hermes-core.h)
+int HermesContext_getMemoryUsage(void* context, HermesCoreMemoryUsage* usageOut);
 
 // Version
 const char* Hermes_getVersion(void);

@@ -109,7 +109,26 @@ actual class JsEngine private constructor(
     }
 
   actual val memoryUsage: MemoryUsage
-    get() = throw UnsupportedOperationException("Memory usage details not available in Hermes native engine")
+    get() {
+      checkNotClosed()
+      memScoped {
+        val usage = alloc<HermesCoreMemoryUsage>()
+        val ok = HermesContext_getMemoryUsage(contextPointer, usage.ptr)
+        check(ok != 0) { "HermesContext_getMemoryUsage failed" }
+        return MemoryUsage(
+          heapSize = usage.heapSize,
+          allocatedBytes = usage.allocatedBytes,
+          totalAllocatedBytes = usage.totalAllocatedBytes,
+          va = usage.va,
+          externalBytes = usage.externalBytes,
+          mallocSizeEstimate = usage.mallocSizeEstimate,
+          peakAllocatedBytes = usage.peakAllocatedBytes,
+          peakLiveAfterGC = usage.peakLiveAfterGC,
+          numCollections = usage.numCollections,
+          numMarkStackOverflows = usage.numMarkStackOverflows,
+        )
+      }
+    }
 
   actual var memoryLimit: Long
     get() = throw UnsupportedOperationException()

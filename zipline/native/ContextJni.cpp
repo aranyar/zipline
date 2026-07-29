@@ -105,8 +105,7 @@ ContextJni::ContextJni(JNIEnv* env)
       jsExceptionClass, "<init>", "(Ljava/lang/String;Ljava/lang/String;)V");
 
   // Shared Zipline runtime + GC config (hardened + ES6Proxy, 32 MB initial
-  // heap, 3 GB max — see hermes-core.cpp). Kept as a member because
-  // memoryUsage() reports the configured heap sizes.
+  // heap, 3 GB max — see hermes-core.cpp).
   runtimeConfig = HermesCore_makeRuntimeConfig();
 
   auto hermesRuntime = facebook::hermes::makeHermesRuntime(runtimeConfig);
@@ -221,38 +220,26 @@ jobject ContextJni::memoryUsage(JNIEnv* env) {
   jclass memClass = findClassOrNull(env, "app/cash/zipline/MemoryUsage");
   if (memClass == nullptr) return nullptr;
   jmethodID memCtor = env->GetMethodID(
-      memClass, "<init>", "(JJJJJJJJJJJJJJJJJJJJJJJJJJ)V");
+      memClass, "<init>", "(JJJJJJJJJJ)V");
   if (memCtor == nullptr) { env->ExceptionClear(); return nullptr; }
 
-  const auto& cfg = runtimeConfig.getGCConfig();
+  HermesCoreMemoryUsage usage;
+  if (!HermesCore_getMemoryUsage(this, &usage)) {
+    return nullptr;
+  }
+
   return env->NewObject(
       memClass, memCtor,
-      static_cast<jlong>(0),                       // malloc_count
-      static_cast<jlong>(cfg.getInitHeapSize()),    // malloc_size
-      static_cast<jlong>(cfg.getMaxHeapSize()),    // malloc_limit
-      static_cast<jlong>(0),                       // memory_used_count
-      static_cast<jlong>(0),                       // memory_used_size
-      static_cast<jlong>(0),                       // atom_count
-      static_cast<jlong>(0),                       // atom_size
-      static_cast<jlong>(0),                       // str_count
-      static_cast<jlong>(0),                       // str_size
-      static_cast<jlong>(0),                       // obj_count
-      static_cast<jlong>(0),                       // obj_size
-      static_cast<jlong>(0),                       // prop_count
-      static_cast<jlong>(0),                       // prop_size
-      static_cast<jlong>(0),                       // shape_count
-      static_cast<jlong>(0),                       // shape_size
-      static_cast<jlong>(0),                       // js_func_count
-      static_cast<jlong>(0),                       // js_func_size
-      static_cast<jlong>(0),                       // js_func_code_size
-      static_cast<jlong>(0),                       // js_func_pc2line_count
-      static_cast<jlong>(0),                       // js_func_pc2line_size
-      static_cast<jlong>(0),                       // c_func_count
-      static_cast<jlong>(0),                       // array_count
-      static_cast<jlong>(0),                       // fast_array_count
-      static_cast<jlong>(0),                       // fast_array_elements
-      static_cast<jlong>(0),                       // binary_object_count
-      static_cast<jlong>(0)                        // binary_object_size
+      static_cast<jlong>(usage.heapSize),
+      static_cast<jlong>(usage.allocatedBytes),
+      static_cast<jlong>(usage.totalAllocatedBytes),
+      static_cast<jlong>(usage.va),
+      static_cast<jlong>(usage.externalBytes),
+      static_cast<jlong>(usage.mallocSizeEstimate),
+      static_cast<jlong>(usage.peakAllocatedBytes),
+      static_cast<jlong>(usage.peakLiveAfterGC),
+      static_cast<jlong>(usage.numCollections),
+      static_cast<jlong>(usage.numMarkStackOverflows)
   );
 }
 
