@@ -6,7 +6,7 @@
 namespace jsi = facebook::jsi;
 
 ContextBase::~ContextBase() {
-  for (auto* ch : callChannels) delete ch;
+  for (auto* ch : inboundChannels) delete ch;
   for (auto* ch : outboundChannels) delete ch;
 }
 

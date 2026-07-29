@@ -69,6 +69,10 @@ private fun rdmaChangeSinkSendChanges(context: COpaquePointer?) {
     sink.sendChanges()
 }
 
+/*
+* This class is NOT thread safe. If multiple threads access an instance concurrently it must be
+* synchronized externally.
+*/
 @OptIn(ExperimentalForeignApi::class)
 @EngineApi
 actual class JsEngine private constructor(

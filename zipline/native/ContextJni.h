@@ -75,7 +75,6 @@ class ContextJni : public ContextBase {
   jmethodID doubleValueOf;
   jmethodID stringGetBytes;
   jmethodID stringConstructor;
-  jmethodID memoryUsageConstructor;
   jmethodID jsExceptionConstructor;
 
   // RDMA Changes support

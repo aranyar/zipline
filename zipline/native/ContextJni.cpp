@@ -78,7 +78,6 @@ ContextJni::ContextJni(JNIEnv* env)
       stringClass(findClassOrNull(env, "java/lang/String")),
       stringUtf8(static_cast<jstring>(env->NewGlobalRef(env->NewStringUTF("UTF-8")))),
       jsExceptionClass(findClassOrNull(env, "app/cash/zipline/JsException")),
-      memoryUsageConstructor(nullptr),
       pendingJavaException(nullptr) {
   env->GetJavaVM(&javaVm);
 
@@ -219,10 +218,6 @@ jbyteArray ContextJni::compile(JNIEnv* env, jstring source, jstring file,
 }
 
 jobject ContextJni::memoryUsage(JNIEnv* env) {
-  // Return null if the JsEngine classes we depend on weren't found at
-  // construction time (means an old jar with the old class name).
-  if (memoryUsageConstructor == nullptr) return nullptr;
-
   jclass memClass = findClassOrNull(env, "app/cash/zipline/MemoryUsage");
   if (memClass == nullptr) return nullptr;
   jmethodID memCtor = env->GetMethodID(
@@ -274,7 +269,7 @@ InboundCallChannel* ContextJni::getInboundCallChannel(JNIEnv* env, jstring name)
   if (obj.isObject()) {
     inbound = new InboundCallChannel(serviceName);
     if (!env->ExceptionCheck()) {
-      callChannels.push_back(inbound);
+      inboundChannels.push_back(inbound);
     } else {
       delete inbound;
       inbound = nullptr;
@@ -675,8 +670,6 @@ jobject ContextJni::jsObjectToJsonElement(JNIEnv* env, const jsi::Value& val) {
   env->DeleteLocalRef(valuesList);
   return result;
 }
-
-static inline RdmaChange changeCopy(const RdmaChange& ch) { return ch; }
 
 static jobject rdmaChangeToJava(JNIEnv* env, const RdmaChange& ch, ContextJni* context) {
   switch (ch.type) {

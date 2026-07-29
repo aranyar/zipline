@@ -43,7 +43,7 @@ struct ContextBase {
 
  protected:
   // Channels created through this context; deleted with it.
-  std::vector<InboundCallChannel*> callChannels;
+  std::vector<InboundCallChannel*> inboundChannels;
   std::vector<OutboundCallChannel*> outboundChannels;
 };
 
