@@ -15,6 +15,7 @@
  */
 package app.cash.zipline
 
+import app.cash.zipline.testing.compileTestingJsModules
 import app.cash.zipline.testing.loadTestingJs
 import kotlin.test.Test
 import kotlin.test.assertTrue
@@ -59,17 +60,23 @@ class MemoryTrackingTest {
 
   @Test
   fun createAndDestroyDoesNotLeak() = runBlocking {
-    // Retained memory converges to a plateau, it does not leak: a 1500-cycle
-    // JVM run (see LeakIsolationTest.engineCoroutinesScalarGlobalLong) grew
-    // +59 MB in the first 100 cycles, then decelerated to <10 KB/cycle by
-    // cycle 1000, converging to a fixed plateau. The baseline here is taken
-    // after the steep part of that convergence.
-    val warmup = 200
-    val iterations = 50
+    // Modules are compiled once and only bytecode is executed per cycle —
+    // the production bytecode-cache scenario. Without per-cycle compilation
+    // there is no long convergence tail (RSS is flat from the start on both
+    // platforms), so warmup is short and limits are tight.
+    val warmup = 10
+    val iterations = 100
+
+    val compiler = Zipline.create(Dispatchers.Default)
+    val modules = compileTestingJsModules(compiler.jsEngine)
+    compiler.close()
 
     fun oneCycle() {
       val zipline = Zipline.create(Dispatchers.Default)
-      zipline.loadTestingJs()
+      for ((id, bytecode) in modules) {
+        zipline.loadJsModule(bytecode, id)
+      }
+      zipline.jsEngine.evaluate("globalThis['testing'] = require('./zipline-root-zipline-testing.js');")
       zipline.jsEngine.evaluate("globalThis.blob = new Array(1000).fill('x').join('');")
       zipline.jsEngine.gc()
       zipline.close()
@@ -108,21 +115,21 @@ class MemoryTrackingTest {
 
     // A real leak scales linearly with iterations (each Zipline holds a
     // multi-MB Hermes runtime, so a true per-cycle leak would add hundreds
-    // of MB here). Worst observed convergence-tail growth on JVM is
-    // ~340 KB/cycle; budget: 384 KB/cycle.
+    // of MB here). With cached bytecode the observed drift is <50 KB/cycle;
+    // budget: 128 KB/cycle.
     val rssGrowth = rssFinal - rssBaseline
     assertTrue(
-      rssGrowth < iterations * 384L * 1024,
+      rssGrowth < iterations * 128L * 1024,
       "RSS grew by $rssGrowth bytes over $iterations create/close cycles" +
         " (baseline=$rssBaseline final=$rssFinal)",
     )
 
     // Convergence decelerates; a leak does not. Comparing halves (rather
     // than a point-to-point slope) averages out sample noise. Only checked
-    // when total growth exceeds the 192 KB/cycle noise floor — below that,
+    // when total growth exceeds the 64 KB/cycle noise floor — below that,
     // finalizer-timing noise (drops and rebounds) dominates and the trend
     // check is meaningless.
-    if (rssGrowth > iterations * 192L * 1024) {
+    if (rssGrowth > iterations * 64L * 1024) {
       val rssSamples = samples.map { it.second }
       val firstHalfGrowth = rssSamples[rssSamples.size / 2] - rssSamples[0]
       val secondHalfGrowth = rssSamples.last() - rssSamples[rssSamples.size / 2]
@@ -141,7 +148,7 @@ class MemoryTrackingTest {
    */
   @Test
   fun memoryProfileForPlot() = runBlocking {
-    val iterations = 200
+    val iterations = 100
     println("memprofile,cycle,heapBytes,rssBytes")
     repeat(iterations) { i ->
       val zipline = Zipline.create(Dispatchers.Default)
@@ -151,6 +158,34 @@ class MemoryTrackingTest {
       zipline.close()
       gcCollect()
       println("memprofile,${i + 1},${heapUsedBytes()},${rssBytes()}")
+    }
+  }
+
+  /**
+   * Same as [memoryProfileForPlot] but modules are compiled ONCE and only
+   * bytecode is executed per cycle — the production bytecode-cache scenario.
+   * Skips the per-cycle compiler transient that dominates native RSS churn.
+   * Emits `memprofile-bc` lines.
+   */
+  @Test
+  fun memoryProfileForPlotBytecode() = runBlocking {
+    val compiler = Zipline.create(Dispatchers.Default)
+    val modules = compileTestingJsModules(compiler.jsEngine)
+    compiler.close()
+
+    val iterations = 100
+    println("memprofile-bc,cycle,heapBytes,rssBytes")
+    repeat(iterations) { i ->
+      val zipline = Zipline.create(Dispatchers.Default)
+      for ((id, bytecode) in modules) {
+        zipline.loadJsModule(bytecode, id)
+      }
+      zipline.jsEngine.evaluate("globalThis['testing'] = require('./zipline-root-zipline-testing.js');")
+      zipline.jsEngine.evaluate("globalThis.blob = new Array(1000).fill('x').join('');")
+      zipline.jsEngine.gc()
+      zipline.close()
+      gcCollect()
+      println("memprofile-bc,${i + 1},${heapUsedBytes()},${rssBytes()}")
     }
   }
 

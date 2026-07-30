@@ -55,6 +55,30 @@ fun Zipline.loadTestingJsModulesOnly() {
   loadJsModuleFromResource("./zipline-root-zipline-testing.js")
 }
 
+val testingModuleIds = listOf(
+  "./kotlin-kotlin-stdlib.js",
+  "./kotlinx-atomicfu.js",
+  "./kotlinx-serialization-kotlinx-serialization-core.js",
+  "./kotlinx-serialization-kotlinx-serialization-json.js",
+  "./kotlinx-coroutines-core.js",
+  "./kotlin_org_jetbrains_kotlin_kotlin_dom_api_compat.js",
+  "./zipline-root-zipline.js",
+  "./zipline-root-zipline-cryptography.js",
+  "./zipline-root-zipline-testing.js",
+)
+
+/**
+ * Compile all testing modules once. Execute them with
+ * `loadJsModule(bytecode, id)` per instance instead of recompiling per
+ * instance — mirrors production bytecode caching and skips the compiler
+ * transient that dominates native memory churn.
+ */
+fun compileTestingJsModules(jsEngine: JsEngine): List<Pair<String, ByteArray>> {
+  return testingModuleIds.map { id ->
+    id to jsEngine.compile(readJsAsResourceOrFile(id), id)
+  }
+}
+
 /** Evaluate (register) a single testing module script on a bare [JsEngine]. */
 fun JsEngine.loadJsModuleForTest(fileName: String) {
   val currentModuleId = "app_cash_zipline_currentModuleId"
