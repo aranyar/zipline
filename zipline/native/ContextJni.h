@@ -13,6 +13,12 @@
 namespace jsi = facebook::jsi;
 namespace hermes_vm = hermes::vm;
 
+class ContextJni;
+
+namespace zipline_cdp {
+struct Session;
+}
+
 class ContextJni : public ContextBase {
  public:
   explicit ContextJni(JNIEnv* env);
@@ -104,6 +110,10 @@ class ContextJni : public ContextBase {
   jmethodID rdmaBridgeSendBatch;
 
   std::vector<RdmaChange> pendingChanges;
+
+  // Active CDP debug session, owned by this context (see CdpJni.cpp). Raw
+  // pointer because Session is only defined in the CdpJni translation unit.
+  zipline_cdp::Session* cdpSession = nullptr;
 
   void cacheRdmaBridgeMethods(JNIEnv* env);
   jobject jsValueToJsonElement(JNIEnv* env, const jsi::Value& val);

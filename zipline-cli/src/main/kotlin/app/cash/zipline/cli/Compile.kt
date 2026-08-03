@@ -50,6 +50,27 @@ internal class Compile : CliktCommand("compile") {
   private val version by option()
   private val stripLineNumbers by option().flag()
 
+  private val debugSourceUrlPrefix by option()
+    .help(
+      """
+      |URL prefix baked into the compiled bytecode as each script's URL (e.g.
+      |"http://localhost:8080"), so Chrome DevTools can fetch the .js sources and
+      |.js.map source maps from the Zipline development server while CDP debugging.
+      |When set, the .js and .js.map files are also copied to the output directory
+      |(which the development server serves) and debug info is kept in the bytecode.
+      """.trimMargin(),
+    )
+
+  private val debugSourceRootDir by option("--debug-source-root")
+    .file()
+    .help(
+      """
+      |Repository root used to rewrite source map "sources" into server-resolvable
+      |paths (sibling checkouts are mapped under __wb_root__). Only meaningful
+      |together with --debug-source-url-prefix.
+      """.trimMargin(),
+    )
+
   private val signingKeys by option("--sign")
     .help(
       """
@@ -89,6 +110,8 @@ internal class Compile : CliktCommand("compile") {
       version = version,
       metadata = metadata,
       stripLineNumbers = stripLineNumbers,
+      debugSourceUrlPrefix = debugSourceUrlPrefix,
+      debugSourceRootDir = debugSourceRootDir,
     )
 
     if (addedFiles.size or removedFiles.size or modifiedFiles.size != 0) {

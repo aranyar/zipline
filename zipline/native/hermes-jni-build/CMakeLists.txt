@@ -95,6 +95,8 @@ set(GLUE_CORE_SOURCES
 
 # JNI-specific glue source files (Android only - not needed for iOS/macOS).
 set(GLUE_JNI_SOURCES
+  ${HERMES_SRC}/../CdpJni.cpp
+  ${HERMES_SRC}/../CdpJni.h
   ${HERMES_SRC}/../ContextJni.cpp
   ${HERMES_SRC}/../ContextJni.h
   ${HERMES_SRC}/../OutboundCallChannelJni.cpp
@@ -124,7 +126,10 @@ if(ANDROID)
   set(HERMES_IS_ANDROID TRUE)
   set(ANDROID_STL "c++_shared")
   set(HERMES_ENABLE_TEST_SUITE OFF)
-  set(HERMES_ENABLE_DEBUGGER OFF)
+  # The debugger (incl. the CDP agent in API/hermes/cdp) is enabled so Kotlin/JS
+  # code can be debugged from Chrome DevTools. Disable with
+  # -DHERMES_ENABLE_DEBUGGER=OFF for size-critical builds.
+  set(HERMES_ENABLE_DEBUGGER ON)
   set(HERMES_ENABLE_TOOLS OFF)
   set(HERMES_ENABLE_INTL FALSE)
   set(HERMES_UNICODE_LITE TRUE)
@@ -173,6 +178,17 @@ if(ANDROID)
       "${_hermes_subdir}/external/boost/boost_1_86_0/libs/context/libboost_context.a")
   endif()
 
+  if(HERMES_ENABLE_DEBUGGER)
+    # Glue sources include AsyncDebuggerAPI.h / CDP headers whose declarations
+    # change based on this define; keep it in sync with the Hermes build.
+    target_compile_definitions(zipline_glue PRIVATE HERMES_ENABLE_DEBUGGER=1)
+    if(HERMESVM_LEAN AND TARGET hermesParser_obj)
+      # The CDP agent (part of hermesapi_obj inside hermesvmlean_a) parses CDP
+      # JSON messages with hermesParser, which lean builds otherwise exclude.
+      target_link_libraries(hermesvmlean PRIVATE hermesParser_obj)
+    endif()
+  endif()
+
   # Set page size for Android Hermes builds
   if(ANDROID)
     set_target_properties(hermesvmlean PROPERTIES
@@ -185,18 +201,12 @@ if(ANDROID)
 
   # Exclude the unused shared lib so only the needed target is built.
   if(HERMESVM_LEAN)
-    if(TARGET hermesvmlean)
-      set_target_properties(hermesvmlean PROPERTIES EXCLUDE_FROM_ALL TRUE)
-    endif()
     if(TARGET hermesvm)
       set_target_properties(hermesvm PROPERTIES EXCLUDE_FROM_ALL TRUE)
     endif()
   else()
     if(TARGET hermesvmlean)
       set_target_properties(hermesvmlean PROPERTIES EXCLUDE_FROM_ALL TRUE)
-    endif()
-    if(TARGET hermesvm)
-      set_target_properties(hermesvm PROPERTIES EXCLUDE_FROM_ALL TRUE)
     endif()
   endif()
 
@@ -333,7 +343,9 @@ elseif(DEFINED HERMES_STATIC_BUILD_DIR)
   # ---- macOS/Linux host build with prebuilt static libs ----
   set(HERMES_BUILD_SHARED_JSI OFF)
   set(HERMES_ENABLE_TEST_SUITE OFF)
-  set(HERMES_ENABLE_DEBUGGER OFF)
+  # Keep in sync with the -DHERMES_ENABLE_DEBUGGER flag used to produce the
+  # prebuilt static libs (see buildHermes*Static Gradle tasks).
+  set(HERMES_ENABLE_DEBUGGER ON)
   set(HERMES_ENABLE_TOOLS OFF)
   set(HERMES_ENABLE_INTL FALSE)
   set(HERMES_UNICODE_LITE TRUE)
@@ -431,6 +443,9 @@ elseif(DEFINED HERMES_STATIC_BUILD_DIR)
   target_include_directories(hermesvm_jni PRIVATE
     ${_GLUE_INCLUDES}
     "${_hermes_subdir}/external/llvh/include")
+  if(HERMES_ENABLE_DEBUGGER)
+    target_compile_definitions(hermesvm_jni PRIVATE HERMES_ENABLE_DEBUGGER=1)
+  endif()
   target_link_libraries(hermesvm_jni PRIVATE
     "-Wl,-force_load,${_THIN_HERMES_VM_A}"
     "-Wl,-force_load,${_THIN_JSI_A}"

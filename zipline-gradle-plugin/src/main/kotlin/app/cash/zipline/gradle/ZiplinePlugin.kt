@@ -186,6 +186,12 @@ class ZiplinePlugin : KotlinCompilerPluginSupportPlugin {
     project.tasks.register(serveTaskName, ZiplineServeTask::class.java) { createdTask ->
       createdTask.description = "Serves Zipline files"
       createdTask.inputDir.set(ziplineCompileTask.flatMap { it.outputDir })
+      createdTask.sourceRootDir.set(project.rootDir)
+      createdTask.siblingRootDir.set(project.rootDir.parentFile)
+      // Serve the React Native DevTools frontend when a checkout of
+      // react-native sits next to this project (compose-live layout).
+      val rnDist = project.rootDir.parentFile.resolve("react-native/packages/debugger-frontend/dist")
+      createdTask.debuggerFrontendDir.set(rnDist)
       createdTask.port.set(extension.httpServerPort)
     }
 

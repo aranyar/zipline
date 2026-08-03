@@ -17,6 +17,7 @@
 #include <jsi/jsi.h>
 
 #include "hermes-core.h"
+#include "CdpJni.h"
 #include "ExceptionThrowers.h"
 #include "InboundCallChannel.h"
 #include "OutboundCallChannelJni.h"
@@ -139,6 +140,10 @@ ContextJni::ContextJni(JNIEnv* env)
 }
 
 ContextJni::~ContextJni() {
+  // Tear down any CDP session before the runtime goes away; the session's
+  // agent and debug API reference the runtime.
+  zipline_cdp::detach(this);
+
   JNIEnv* env = getEnv();
   if (env) {
     for (auto& kv : globalReferences) env->DeleteGlobalRef(kv.second);
@@ -154,6 +159,10 @@ ContextJni::~ContextJni() {
 }
 
 jobject ContextJni::execute(JNIEnv* env, jbyteArray byteCode, jstring fileName) {
+  // Run any pending CDP runtime tasks (e.g. breakpoint installation) before
+  // evaluating more JavaScript. We are on the JS thread here.
+  zipline_cdp::drainTasks(this);
+
   const jsize n = env->GetArrayLength(byteCode);
   std::vector<uint8_t> buf(n);
   env->GetByteArrayRegion(byteCode, 0, n, reinterpret_cast<jbyte*>(buf.data()));

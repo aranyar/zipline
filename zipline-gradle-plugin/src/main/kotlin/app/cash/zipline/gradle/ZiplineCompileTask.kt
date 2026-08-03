@@ -79,6 +79,14 @@ abstract class ZiplineCompileTask @Inject constructor(
   @get:Input
   abstract val stripLineNumbers: Property<Boolean>
 
+  @get:Optional
+  @get:Input
+  abstract val debugSourceUrlPrefix: Property<String>
+
+  @get:Optional
+  @get:Input
+  abstract val debugSourceRoot: Property<String>
+
   @get:Classpath
   abstract val classpath: ConfigurableFileCollection
 
@@ -106,6 +114,9 @@ abstract class ZiplineCompileTask @Inject constructor(
         it && jsProductionTask.mode == KotlinJsBinaryMode.PRODUCTION
       },
     )
+
+    debugSourceUrlPrefix.set(extension.debugSourceUrlPrefix)
+    debugSourceRoot.set(project.rootDir.absolutePath)
 
     signingKeys.set(
       project.provider {
@@ -160,6 +171,14 @@ abstract class ZiplineCompileTask @Inject constructor(
       }
       if (stripLineNumbers.getOrElse(false)) {
         add("--strip-line-numbers")
+      }
+      debugSourceUrlPrefix.orNull?.let {
+        add("--debug-source-url-prefix")
+        add(it)
+        debugSourceRoot.orNull?.let { root ->
+          add("--debug-source-root")
+          add(root)
+        }
       }
       if (inputChanges.isIncremental) {
         for (fileChange in inputChanges.getFileChanges(inputDir)) {

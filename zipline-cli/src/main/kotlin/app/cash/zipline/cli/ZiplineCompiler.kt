@@ -26,6 +26,13 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
 import okio.ByteString.Companion.toByteString
 import okio.HashingSink
 import okio.buffer
@@ -39,10 +46,20 @@ internal class ZiplineCompiler(
   private val version: String?,
   private val metadata: Map<String, String>,
   private val stripLineNumbers: Boolean,
+  private val debugSourceUrlPrefix: String? = null,
+  private val debugSourceRootDir: File? = null,
 ) {
   companion object {
     private const val MODULE_PATH_PREFIX = "./"
     private const val ZIPLINE_EXTENSION = ".zipline"
+
+    /**
+     * Placeholder source map: triggers debug-info emission without translating
+     * debug locations, so the debug line table stays in generated-JS
+     * coordinates (a single file region) and breakpoints resolve everywhere.
+     */
+    private const val EMPTY_SOURCE_MAP =
+      """{"version":3,"file":"bundle.js","sources":["bundle.kt"],"names":[],"mappings":""}"""
   }
 
   fun compile(
@@ -74,6 +91,10 @@ internal class ZiplineCompiler(
     // Delete Zipline files for any removed JS files.
     removedFileNames.forEach {
       File(outputDir.path + "/" + it.removeSuffix(".js") + ZIPLINE_EXTENSION).delete()
+      if (debugSourceUrlPrefix != null) {
+        File(outputDir, it).delete()
+        File(outputDir, "$it.map").delete()
+      }
     }
 
     // Compile the newly added or modified files and add them into the module list.
@@ -99,8 +120,41 @@ internal class ZiplineCompiler(
       .toMap()
   }
 
-  private fun compileSingleFile(
-    jsFile: File,
+  /**
+   * Rewrites a source map's "sources" entries so they resolve under the directory the
+   * development server serves. Paths inside [sourceRootDir] become root-relative; paths in
+   * sibling checkouts (e.g. redwood-tret, zipline-hermes) become `__wb_root__/...`; anything
+   * else (CI/buildbot paths) is left unchanged and will simply be unavailable in DevTools.
+   */
+  private fun rewriteSourceMapSources(mapText: String, mapFile: File, sourceRootDir: File): String {
+    val root = sourceRootDir.canonicalFile
+    val parent = root.parentFile
+    val mapDir = mapFile.canonicalFile.parentFile
+    val mapJson = try {
+      Json.parseToJsonElement(mapText).jsonObject
+    } catch (_: Exception) {
+      return mapText
+    }
+    val sources = mapJson["sources"]?.jsonArray ?: return mapText
+    val rewritten = sources.map { element ->
+      val source = (element as? JsonPrimitive)?.contentOrNull ?: return@map element
+      val resolved = File(mapDir, source).canonicalFile
+      when {
+        resolved.path.startsWith(root.path + File.separator) ->
+          JsonPrimitive(resolved.relativeTo(root).path)
+        parent != null && resolved.path.startsWith(parent.path + File.separator) ->
+          JsonPrimitive("__wb_root__/" + resolved.relativeTo(parent).path)
+        else -> element
+      }
+    }
+    return buildJsonObject {
+      mapJson.forEach { (key, value) ->
+        if (key == "sources") put("sources", JsonArray(rewritten)) else put(key, value)
+      }
+    }.toString()
+  }
+
+  private fun compileSingleFile(    jsFile: File,
   ): Pair<String, ZiplineManifest.Module> {
     val jsSourceMapFile = File("${jsFile.path}.map")
     val outputZiplineFilePath = jsFile.nameWithoutExtension + ZIPLINE_EXTENSION
@@ -108,12 +162,42 @@ internal class ZiplineCompiler(
 
     val jsEngine = JsEngine.create()
     jsEngine.use {
-      val sourceMap = if (jsSourceMapFile.exists()) jsSourceMapFile.readText() else null
-      val bytecode = jsEngine.compile(jsFile.readText(), jsFile.name, sourceMap)
+      // Passing a source map makes the compiler keep debug info (line tables)
+      // in the bytecode; stripLineNumbers drops it for size in production.
+      // When compiling for CDP debugging (debugSourceUrlPrefix set), the real
+      // Kotlin/JS map is NOT embedded: it would translate debug locations to
+      // .kt coordinates, shattering the debug line table into interleaved
+      // per-file regions that Hermes' breakpoint resolution cannot match
+      // (RN's flow keeps debug info in generated coordinates instead, and the
+      // debugger frontend applies the map itself). An empty map keeps debug
+      // info in JS coordinates while the rewritten real map is served to
+      // DevTools from the output directory.
+      val sourceMap = when {
+        stripLineNumbers -> null
+        debugSourceUrlPrefix != null && jsSourceMapFile.exists() -> EMPTY_SOURCE_MAP
+        jsSourceMapFile.exists() -> jsSourceMapFile.readText()
+        else -> null
+      }
 
-      // NOTE: stripLineNumbers is currently ignored — the QuickJS-era
-      // implementation operated on QuickJS bytecode and has no Hermes
-      // equivalent (the zipline-bytecode module was removed).
+      // With a debug source URL prefix, the script URL baked into the bytecode
+      // points at the development server, so Chrome DevTools can fetch this
+      // .js (and its .js.map) over HTTP while CDP debugging.
+      val sourceUrl = debugSourceUrlPrefix?.let { "${it.trimEnd('/')}/${jsFile.name}" }
+        ?: jsFile.name
+      val bytecode = jsEngine.compile(jsFile.readText(), sourceUrl, sourceMap)
+
+      if (debugSourceUrlPrefix != null) {
+        jsFile.copyTo(File(outputDir, jsFile.name), overwrite = true)
+        if (jsSourceMapFile.exists()) {
+          // Rewrite the map's "sources" (build-dir-relative .kt paths) into
+          // paths the development server can resolve (see --debug-source-root),
+          // so Chrome DevTools can open the original Kotlin files.
+          val mapText = jsSourceMapFile.readText()
+          val rewritten = debugSourceRootDir?.let { rewriteSourceMapSources(mapText, jsSourceMapFile, it) }
+            ?: mapText
+          File(outputDir, jsSourceMapFile.name).writeText(rewritten)
+        }
+      }
 
       val ziplineFile = ZiplineFile(CURRENT_ZIPLINE_VERSION, bytecode.toByteString())
       val sha256 = outputZiplineFile.sink().use { fileSink ->

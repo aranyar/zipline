@@ -48,6 +48,15 @@ abstract class ZiplineExtension {
   /** True to forbid the existing Zipline service to be extended with new functions. */
   abstract val forbidServiceExtension: Property<Boolean>
 
+  /**
+   * URL prefix baked into compiled bytecode as each script's URL, e.g. "http://localhost:8080"
+   * (matching [httpServerPort]). When set, the .js sources and .js.map source maps are copied
+   * next to the .zipline files so the development server can serve them to Chrome DevTools,
+   * and the bytecode keeps the debug info needed for CDP debugging (breakpoints, stepping).
+   * Unset by default.
+   */
+  abstract val debugSourceUrlPrefix: Property<String>
+
   /** True to include source DTO schemas in Zipline API function IDs. */
   abstract val includeSchemaInFunctionIds: Property<Boolean>
 

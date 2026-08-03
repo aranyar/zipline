@@ -28,6 +28,7 @@ import app.cash.zipline.internal.bridge.Endpoint
 import app.cash.zipline.internal.bridge.ZiplineServiceAdapter
 import app.cash.zipline.internal.bridge.stopTrackingLeaks
 import app.cash.zipline.internal.bridge.theOnlyCancellationException
+import app.cash.zipline.internal.cdpAttachIfEnabled
 import app.cash.zipline.internal.initModuleLoader
 import app.cash.zipline.internal.loadJsModule
 import kotlin.coroutines.resumeWithException
@@ -223,6 +224,7 @@ actual class Zipline private constructor(
 
       val scope = CoroutineScope(dispatcher)
       val result = Zipline(jsEngine, serializersModule, dispatcher, scope, eventListener)
+      cdpAttachIfEnabled(jsEngine, scope)
       eventListener.ziplineCreated(result)
       return result
     }

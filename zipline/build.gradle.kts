@@ -1,4 +1,5 @@
-import co.touchlab.cklib.gradle.CompileToBitcode.Language.C
+import java.util.concurrent.TimeUnit
+
 import com.vanniktech.maven.publish.JavadocJar
 import com.vanniktech.maven.publish.KotlinMultiplatform
 import com.vanniktech.maven.publish.MavenPublishBaseExtension
@@ -251,7 +252,6 @@ buildConfig {
   sourceSets.named("hostMain") {
     packageName("app.cash.zipline")
     buildConfigField("String", "jsEngineVersion", "\"${jsEngineVersion()}\"")
-    buildConfigField("String", "hermesLibraryName", "\"${hermesLibraryName()}\"")
   }
 }
 
@@ -259,17 +259,16 @@ buildConfig {
 // buildHermes* tasks below for host/iOS and the android externalNativeBuild
 // block for Android).
 
+// Lean (no JIT/parser, ~1MB smaller per ABI) is the default. Pass
+// -PhermesLean=false for the full engine: required for CDP debugging
+// (Runtime.evaluate / evaluateOnCallFrame compile JS at runtime).
+val hermesLean = providers.gradleProperty("hermesLean").orNull?.toBooleanStrictOrNull() ?: true
+
 fun jsEngineVersion(): String {
   // The vendored JsEngine source is pinned by its git revision (see
   // zipline/native/hermes/hermes-git-revision). Expose that here so the
   // generated BuildConfig mirrors the same value across host + Android.
   return File(projectDir, "native/hermes/hermes-git-revision").readText().trim()
-}
-
-fun hermesLibraryName(): String {
-  // Lean mode is always enabled for Maven publish builds. This excludes
-  // JIT/parser for smaller APKs; compile() will throw UnsupportedOperationException.
-  return "hermesvmlean"
 }
 
 // -----------------------------------------------------------------------------
@@ -395,7 +394,7 @@ val buildHermesMacosStatic: TaskProvider<Exec> =
         -DCMAKE_BUILD_TYPE=MinSizeRel \
         -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" \
         -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15 \
-        -DHERMES_ENABLE_DEBUGGER=OFF \
+        -DHERMES_ENABLE_DEBUGGER=ON \
         -DHERMES_ENABLE_INTL=ON \
         -DHERMES_ENABLE_TEST_SUITE=OFF \
         -DHERMES_ENABLE_TOOLS=OFF \
@@ -481,7 +480,7 @@ val buildHermesLinuxStatic: TaskProvider<Exec> =
       $cmakeBin -S '${jsEngineRoot.absolutePath}' -B '${staticDir.absolutePath}' -G Ninja \
         -DCMAKE_TOOLCHAIN_FILE='${linuxToolchainFile.absolutePath}' \
         -DCMAKE_BUILD_TYPE=MinSizeRel \
-        -DHERMES_ENABLE_DEBUGGER=OFF \
+        -DHERMES_ENABLE_DEBUGGER=ON \
         -DHERMES_ENABLE_INTL=FALSE \
         -DHERMES_UNICODE_LITE=TRUE \
         -DHERMES_ENABLE_TEST_SUITE=OFF \
@@ -539,11 +538,6 @@ val stageHermesHostDylibs: TaskProvider<Sync> =
 // The output libhermesvm.a is embedded in the iOS Kotlin/Native klib.
 //
 // Lean mode (no JS compiler, ~1 MB smaller) is for PRODUCTION publishes and
-// is OFF by default so compile()/evaluate() work in dev and in the test
-// suite (dev-mode loadJsModule compiles JS on-device). Publish with:
-//   ./gradlew publish... -PhermesIosLean=true
-val hermesIosLean: Boolean =
-  providers.gradleProperty("hermesIosLean").orNull?.toBooleanStrictOrNull() ?: true
 
 fun registerBuildHermesStaticIos(
   konanTarget: KonanTarget,
@@ -561,7 +555,7 @@ fun registerBuildHermesStaticIos(
     inputs.files(hermesGlueInputFiles)
     inputs.files(hermesCmakeInputFiles)
     inputs.file(file("native/hermes-ios.exports"))
-    inputs.property("hermesIosLean", hermesIosLean)
+    inputs.property("hermesLean", hermesLean)
     outputs.file(outputFile)
     val cmakeBin = System.getenv("CMAKE_BIN") ?: "cmake"
     val jobs = Runtime.getRuntime().availableProcessors().toString()
@@ -583,7 +577,7 @@ fun registerBuildHermesStaticIos(
         -DCMAKE_OSX_SYSROOT="${'$'}SDK_PATH" \
         -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
         -DCMAKE_OSX_ARCHITECTURES='$architectures' \
-        -DHERMESVM_LEAN=${if (hermesIosLean) "ON" else "OFF"} \
+        -DHERMESVM_LEAN=${if (hermesLean) "ON" else "OFF"} \
         -DHERMES_IOS_STATIC=ON \
         -DHERMES_SRC='${jsEngineRoot.absolutePath}' \
         -DIMPORT_HOST_COMPILERS='${hermesImportCompilers.absolutePath}'
@@ -681,9 +675,19 @@ android {
   namespace = "app.cash.zipline"
   compileSdk = libs.versions.compileSdk.get().toInt()
 
+  buildFeatures {
+    buildConfig = true
+  }
+
   defaultConfig {
     minSdk = libs.versions.minSdk.get().toInt()
     multiDexEnabled = true
+
+    buildConfigField(
+      "String",
+      "hermesLibraryName",
+      "\"${if (hermesLean) "hermesvmlean" else "hermesvm"}\"",
+    )
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     consumerProguardFiles("proguard-rules.pro")
@@ -697,6 +701,10 @@ android {
     // adds our glue on top and links the whole thing into a single .so.
     externalNativeBuild {
       cmake {
+        // Build only the engine variant we package (full by default via
+        // -PhermesLean=false, lean otherwise); the other variant's .so would
+        // otherwise be built and packaged too.
+        targets(if (hermesLean) "hermesvmlean" else "hermesvm")
         arguments(
           "-DANDROID_TOOLCHAIN=clang",
           "-DANDROID_STL=c++_shared",
@@ -706,9 +714,8 @@ android {
           // Pass JAVA_HOME for the JNI include path (on non-Apple; on Android
           // the NDK toolchain's sysroot include dir already has jni.h).
           "-DJAVA_HOME=${javaHome ?: ""}",
-          // Build lean Hermes (no JIT compiler, ~800KB smaller per ABI).
-          // The compile() JNI method will throw UnsupportedOperationException.
-          "-DHERMESVM_LEAN=TRUE",
+          // Pass explicitly: the CMake cache from older builds sticks otherwise.
+          "-DHERMESVM_LEAN=${if (hermesLean) "TRUE" else "FALSE"}",
         )
         cFlags("-fstrict-aliasing", "-DCONFIG_VERSION=\\\"${jsEngineVersion()}\\\"")
         cppFlags("-fstrict-aliasing", "-DCONFIG_VERSION=\\\"${jsEngineVersion()}\\\"")

@@ -138,8 +138,13 @@ int HermesCore_compile(void* context,
         src,
         fname,
         bytecode,
-        /*optimize=*/true,
-        /*emitAsyncBreakCheck=*/false,
+        // Debug builds (with a source map) are compiled unoptimized: the
+        // optimizer's register passes can break the debug info, and Chrome
+        // DevTools debugging matches how RN ships unoptimized debug bundles.
+        /*optimize=*/!sourceMapBuf.has_value(),
+        // Async break checks let the CDP debugger interrupt running JS
+        // (Debugger.pause and other triggerInterrupt_TS users).
+        /*emitAsyncBreakCheck=*/true,
         /*diagHandler=*/nullptr,
         sourceMapBuf);
   } catch (const std::exception& e) {

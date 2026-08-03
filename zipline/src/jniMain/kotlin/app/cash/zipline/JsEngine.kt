@@ -163,10 +163,38 @@ actual class JsEngine private constructor(
     installModuleLoader(context)
   }
 
+  /**
+   * Starts a CDP debug session on this engine. Returns false when the engine was built without
+   * debugger support. [listener] receives outbound CDP messages from arbitrary threads.
+   */
+  internal fun cdpAttach(listener: CdpListener): Boolean {
+    return cdpAttach(context, listener)
+  }
+
+  /** Forwards a CDP command (UTF-8 JSON) to the debug session. Safe to call from any thread. */
+  internal fun cdpHandleCommand(json: String) {
+    cdpHandleCommand(context, json)
+  }
+
+  /** Runs queued debugger runtime tasks. Must be called on the JS thread. */
+  internal fun cdpDrainTasks() {
+    cdpDrainTasks(context)
+  }
+
+  /** Re-creates the CDP agent (preserving breakpoint state) for the next debugger client. */
+  internal fun cdpResetAgent() {
+    cdpResetAgent(context)
+  }
+
+  internal fun cdpDetach() {
+    cdpDetach(context)
+  }
+
   actual override fun close() {
     val contextToClose = context
     if (contextToClose != 0L) {
       context = 0L
+      app.cash.zipline.internal.cdp.CdpDebugSupport.detach(this)
       destroyContext(contextToClose)
     }
   }
@@ -191,6 +219,11 @@ actual class JsEngine private constructor(
   private external fun callGlobalFunctionWithStringArg(context: Long, functionName: String, arg: String): String?
   private external fun callRequireMethod(context: Long, moduleId: String, methodName: String)
   private external fun installModuleLoader(context: Long)
+  private external fun cdpAttach(context: Long, listener: CdpListener): Boolean
+  private external fun cdpHandleCommand(context: Long, json: String)
+  private external fun cdpDrainTasks(context: Long)
+  private external fun cdpResetAgent(context: Long)
+  private external fun cdpDetach(context: Long)
   @JvmName("initRdmaChangesChannel")
   private external fun initRdmaChangesChannel(context: Long)
 }
