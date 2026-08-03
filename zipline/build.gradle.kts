@@ -543,7 +543,7 @@ val stageHermesHostDylibs: TaskProvider<Sync> =
 // suite (dev-mode loadJsModule compiles JS on-device). Publish with:
 //   ./gradlew publish... -PhermesIosLean=true
 val hermesIosLean: Boolean =
-  providers.gradleProperty("hermesIosLean").orNull?.toBooleanStrictOrNull() ?: false
+  providers.gradleProperty("hermesIosLean").orNull?.toBooleanStrictOrNull() ?: true
 
 fun registerBuildHermesStaticIos(
   konanTarget: KonanTarget,
@@ -802,7 +802,6 @@ android {
       path = file("native/hermes-jni-build/CMakeLists.txt")
     }
   }
-}
 
   // Make sure the host-side hermesc is built before AGP's externalNativeBuild
   // task. AGP configures+builds in one task, and the host build is a
