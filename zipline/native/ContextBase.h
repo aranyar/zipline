@@ -41,6 +41,11 @@ struct ContextBase {
   std::unique_ptr<facebook::hermes::HermesRuntime> runtime;
   std::string lastError;
 
+  // When CDP debugging is enabled for this context, runtime compilations must
+  // emit full debug info (line tables, scoping info, sourceMappingURL magic
+  // comments) even when no source map buffer is supplied.
+  bool debugCompilation = false;
+
  protected:
   // Channels created through this context; deleted with it.
   std::vector<InboundCallChannel*> inboundChannels;

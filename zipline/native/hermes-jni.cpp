@@ -37,8 +37,9 @@ inline std::string jstringToCppString(JNIEnv* env, jstring javaString) {
 }  // namespace
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_app_cash_zipline_JsEngine_createContext(JNIEnv* env, jclass /*clazz*/) {
-  ContextJni* c = new (std::nothrow) ContextJni(env);
+Java_app_cash_zipline_JsEngine_createContext(JNIEnv* env, jclass /*clazz*/,
+                                             jboolean forceEagerCompilation) {
+  ContextJni* c = new (std::nothrow) ContextJni(env, forceEagerCompilation == JNI_TRUE);
   if (!c) {
     throwJavaException(env, "java/lang/OutOfMemoryError",
                        "Cannot allocate Hermes Context");
@@ -101,6 +102,19 @@ Java_app_cash_zipline_JsEngine_execute(JNIEnv* env, jobject /*thiz*/,
     return nullptr;
   }
   return ctx->execute(env, bytecode, fileName);
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_app_cash_zipline_JsEngine_evaluate(JNIEnv* env, jobject /*thiz*/,
+                                    jlong _context, jstring source,
+                                    jstring fileName) {
+  ContextJni* ctx = toContext(_context);
+  if (!ctx) {
+    throwJavaException(env, "java/lang/IllegalStateException",
+                       "JsEngine instance was closed");
+    return nullptr;
+  }
+  return ctx->evaluate(env, source, fileName);
 }
 
 extern "C" JNIEXPORT jbyteArray JNICALL

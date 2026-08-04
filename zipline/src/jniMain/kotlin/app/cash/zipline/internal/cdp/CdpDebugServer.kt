@@ -224,7 +224,13 @@ internal class CdpDebugServer(
      */
     fun onCdpMessage(jsonText: String) {
       log("info", "Zipline CDP: <= ${jsonText.take(MAX_LOG_CHARS)}", null)
-      val message = json.parseToJsonElement(jsonText).asObject()
+      val message = try {
+        json.parseToJsonElement(jsonText).asObject()
+      } catch (t: Throwable) {
+        // A malformed message must not kill the connection.
+        log("warn", "Zipline CDP: unparseable message: ${t.message}", null)
+        null
+      }
       val method = message?.get("method").asString()
       if (method == "Debugger.getScriptSource") {
         val requestId = message?.get("id").asString()

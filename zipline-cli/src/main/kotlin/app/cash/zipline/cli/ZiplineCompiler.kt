@@ -48,6 +48,7 @@ internal class ZiplineCompiler(
   private val stripLineNumbers: Boolean,
   private val debugSourceUrlPrefix: String? = null,
   private val debugSourceRootDir: File? = null,
+  private val serveSourceCode: Boolean = false,
 ) {
   companion object {
     private const val MODULE_PATH_PREFIX = "./"
@@ -154,11 +155,47 @@ internal class ZiplineCompiler(
     }.toString()
   }
 
-  private fun compileSingleFile(    jsFile: File,
+  private fun compileSingleFile(
+    jsFile: File,
   ): Pair<String, ZiplineManifest.Module> {
     val jsSourceMapFile = File("${jsFile.path}.map")
     val outputZiplineFilePath = jsFile.nameWithoutExtension + ZIPLINE_EXTENSION
     val outputZiplineFile = File(outputDir.path, outputZiplineFilePath)
+
+    if (serveSourceCode) {
+      // Source mode: serve the raw JavaScript in the .zipline slot instead of
+      // Hermes bytecode, so the engine compiles it on device. Runtime
+      // compilation populates the scoping info table, which makes CDP frame
+      // evaluation and scope inspection work (impossible with precompiled
+      // bytecode). Requires the full (non-lean) engine in the app.
+      var source = jsFile.readText()
+      if (debugSourceUrlPrefix != null) {
+        // Point the script's debug-info URL at the dev server; honored by
+        // Hermes at runtime compile (//# sourceURL directive).
+        source = source.trimEnd() +
+          "\n//# sourceURL=${debugSourceUrlPrefix.trimEnd('/')}/${jsFile.name}\n"
+      }
+      val sha256 = outputZiplineFile.sink().use { fileSink ->
+        val hashingSink = HashingSink.sha256(fileSink)
+        hashingSink.buffer().use { it.writeUtf8(source) }
+        hashingSink.hash
+      }
+      // Keep serving the .js/.js.map alongside for DevTools.
+      if (debugSourceUrlPrefix != null) {
+        File(outputDir, jsFile.name).writeText(source)
+        if (jsSourceMapFile.exists()) {
+          val mapText = jsSourceMapFile.readText()
+          val rewritten = debugSourceRootDir?.let { rewriteSourceMapSources(mapText, jsSourceMapFile, it) }
+            ?: mapText
+          File(outputDir, jsSourceMapFile.name).writeText(rewritten)
+        }
+      }
+      return "$MODULE_PATH_PREFIX${jsFile.name}" to ZiplineManifest.Module(
+        url = outputZiplineFilePath,
+        sha256 = sha256,
+        dependsOnIds = parseDefineDependencies(source),
+      )
+    }
 
     val jsEngine = JsEngine.create()
     jsEngine.use {
@@ -245,5 +282,18 @@ internal class ZiplineCompiler(
     app.cash.zipline.internal.collectModuleDependencies(jsEngine)
     jsEngine.execute(bytecode)
     return app.cash.zipline.internal.getModuleDependencies(jsEngine)
+  }
+
+  /**
+   * Extracts module dependencies from the UMD wrapper's `define([...])` header,
+   * e.g. `define(['exports', './foo.js'], factory)` -> `["./foo.js"]`.
+   * Used in source mode where there is no bytecode to inspect.
+   */
+  private fun parseDefineDependencies(source: String): List<String> {
+    val match = Regex("""define\(\s*\[([^]]*)]""").find(source) ?: return emptyList()
+    return Regex("""['"]([^'"]+)['"]""").findAll(match.groupValues[1])
+      .map { it.groupValues[1] }
+      .filter { it != "exports" && it != "require" }
+      .toList()
   }
 }

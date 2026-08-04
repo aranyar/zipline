@@ -71,6 +71,16 @@ internal class Compile : CliktCommand("compile") {
       """.trimMargin(),
     )
 
+  private val serveSourceCode by option("--serve-source-code").flag()
+    .help(
+      """
+      |Serve raw JavaScript in the .zipline slots instead of Hermes bytecode, so
+      |the engine compiles on device at runtime (CDP frame evaluation and scope
+      |inspection only work with runtime-compiled sources; requires the full,
+      |non-lean engine in the app).
+      """.trimMargin(),
+    )
+
   private val signingKeys by option("--sign")
     .help(
       """
@@ -112,6 +122,7 @@ internal class Compile : CliktCommand("compile") {
       stripLineNumbers = stripLineNumbers,
       debugSourceUrlPrefix = debugSourceUrlPrefix,
       debugSourceRootDir = debugSourceRootDir,
+      serveSourceCode = serveSourceCode,
     )
 
     if (addedFiles.size or removedFiles.size or modifiedFiles.size != 0) {

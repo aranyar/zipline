@@ -57,6 +57,15 @@ abstract class ZiplineExtension {
    */
   abstract val debugSourceUrlPrefix: Property<String>
 
+  /**
+   * True to serve raw JavaScript instead of Hermes bytecode in .zipline slots,
+   * so the engine compiles on device at runtime. This makes CDP frame
+   * evaluation and scope inspection work (they are impossible with precompiled
+   * bytecode because the scoping info table is never serialized). Requires the
+   * full (non-lean) engine in the app. False by default.
+   */
+  abstract val serveSourceCode: Property<Boolean>
+
   /** True to include source DTO schemas in Zipline API function IDs. */
   abstract val includeSchemaInFunctionIds: Property<Boolean>
 

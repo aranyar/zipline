@@ -174,6 +174,16 @@ void resetAgent(ContextJni* ctx) {
   Session* session = ctx->cdpSession;
   std::lock_guard<std::mutex> lock(session->agentMutex);
   if (!session->agent) return;
+  {
+    // Drop tasks enqueued by the old agent: they capture the old agent and
+    // would run against it (use-after-free) if drained after the swap. The
+    // client disconnected, so nothing is waiting on their results. Tasks the
+    // old agent's destructor enqueues during the swap below (e.g. domain
+    // dispose, which clears breakpoints) are safe — they keep their targets
+    // alive — and must survive.
+    std::lock_guard<std::mutex> queueLock(session->queueMutex);
+      session->taskQueue.clear();
+  }
   cdp::State state = session->agent->getState();
   session->agent = createAgent(session, std::move(state));
 }

@@ -67,7 +67,7 @@ bool tryAsInt64(double d, int64_t& out) {
 
 }  // namespace
 
-ContextJni::ContextJni(JNIEnv* env)
+ContextJni::ContextJni(JNIEnv* env, bool forceEagerCompilation)
     : jniVersion(env->GetVersion()),
       // Default runtime config is built in the body; member init-list can't
       // chain the .withX(...) builder calls.
@@ -107,7 +107,8 @@ ContextJni::ContextJni(JNIEnv* env)
 
   // Shared Zipline runtime + GC config (hardened + ES6Proxy, 32 MB initial
   // heap, 3 GB max — see hermes-core.cpp).
-  runtimeConfig = HermesCore_makeRuntimeConfig();
+  runtimeConfig = HermesCore_makeRuntimeConfig(forceEagerCompilation);
+  debugCompilation = forceEagerCompilation;
 
   auto hermesRuntime = facebook::hermes::makeHermesRuntime(runtimeConfig);
   if (!hermesRuntime) {
@@ -184,6 +185,34 @@ jobject ContextJni::execute(JNIEnv* env, jbyteArray byteCode, jstring fileName) 
     __android_log_print(ANDROID_LOG_ERROR, "JSI", "execute: exception: %s", e.what());
     #endif
     throwJsExceptionFmt(env, this, "Hermes execute failed: %s", e.what());
+    return nullptr;
+  }
+  return toJavaObject(env, result, /*throwOnUnsupportedType=*/false);
+}
+
+jobject ContextJni::evaluate(JNIEnv* env, jstring source, jstring fileName) {
+  // Run any pending CDP runtime tasks (e.g. breakpoint installation) before
+  // evaluating more JavaScript. We are on the JS thread here.
+  zipline_cdp::drainTasks(this);
+
+  std::string src = toCppString(env, source);
+  std::string fileNameStr = fileName ? zipline::jniStringToUtf8(env, fileName)
+                                     : std::string("zipline-module.js");
+
+  jsi::Value result;
+  try {
+    result = HermesCore_evaluateSource(this, src.c_str(), fileNameStr);
+  } catch (const jsi::JSError& e) {
+    #ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_ERROR, "JSI", "evaluate: JSError: %s", e.getMessage().c_str());
+    #endif
+    throwJsException(env, const_cast<jsi::JSError&>(e));
+    return nullptr;
+  } catch (const std::exception& e) {
+    #ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_ERROR, "JSI", "evaluate: exception: %s", e.what());
+    #endif
+    throwJsExceptionFmt(env, this, "Hermes evaluate failed: %s", e.what());
     return nullptr;
   }
   return toJavaObject(env, result, /*throwOnUnsupportedType=*/false);
