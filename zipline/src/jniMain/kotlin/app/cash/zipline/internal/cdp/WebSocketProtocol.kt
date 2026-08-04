@@ -132,7 +132,9 @@ internal object WebSocketProtocol {
    * [onText]. Returns when the peer closes or on IO error.
    */
   fun readFrames(input: InputStream, output: OutputStream, onText: (String) -> Unit) {
-    val message = StringBuilder()
+    // Bytes are accumulated across fragments and decoded only at FIN: a
+    // multi-byte UTF-8 character may be split across fragment boundaries.
+    val message = java.io.ByteArrayOutputStream()
     while (true) {
       val b0 = input.read()
       if (b0 == -1) return
@@ -160,13 +162,13 @@ internal object WebSocketProtocol {
       }
       when (opcode) {
         OPCODE_TEXT -> {
-          message.setLength(0)
-          message.append(String(payload, Charsets.UTF_8))
-          if (fin) onText(message.toString())
+          message.reset()
+          message.write(payload)
+          if (fin) onText(String(message.toByteArray(), Charsets.UTF_8))
         }
         OPCODE_CONTINUATION -> {
-          message.append(String(payload, Charsets.UTF_8))
-          if (fin) onText(message.toString())
+          message.write(payload)
+          if (fin) onText(String(message.toByteArray(), Charsets.UTF_8))
         }
         OPCODE_PING -> sendPong(output, payload)
         OPCODE_PONG -> Unit

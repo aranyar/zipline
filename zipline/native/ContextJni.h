@@ -6,6 +6,7 @@
 
 #include <jni.h>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -116,6 +117,9 @@ class ContextJni : public ContextBase {
 
   // Active CDP debug session, owned by this context (see CdpJni.cpp). Raw
   // pointer because Session is only defined in the CdpJni translation unit.
+  // Guarded by cdpSessionMutex: CDP commands arrive on transport threads while
+  // detach() (engine close) destroys the session on the JS thread.
+  std::mutex cdpSessionMutex;
   zipline_cdp::Session* cdpSession = nullptr;
 
   void cacheRdmaBridgeMethods(JNIEnv* env);

@@ -131,6 +131,7 @@ std::unique_ptr<cdp::CDPAgent> createAgent(Session* raw, cdp::State state) {
 
 bool attach(ContextJni* ctx, JNIEnv* env, jobject listener) {
   if (!ctx || !listener) return false;
+  std::lock_guard<std::mutex> sessionLock(ctx->cdpSessionMutex);
   if (ctx->cdpSession) return true;
 
   jclass listenerClass = env->GetObjectClass(listener);
@@ -161,7 +162,10 @@ bool attach(ContextJni* ctx, JNIEnv* env, jobject listener) {
 }
 
 void handleCommand(ContextJni* ctx, const std::string& json) {
-  if (!ctx || !ctx->cdpSession) return;
+  if (!ctx) return;
+  // Held for the whole call: detach() must not free the session mid-command.
+  std::lock_guard<std::mutex> sessionLock(ctx->cdpSessionMutex);
+  if (!ctx->cdpSession) return;
   Session* session = ctx->cdpSession;
   std::lock_guard<std::mutex> lock(session->agentMutex);
   if (session->agent) {
@@ -170,7 +174,10 @@ void handleCommand(ContextJni* ctx, const std::string& json) {
 }
 
 void resetAgent(ContextJni* ctx) {
-  if (!ctx || !ctx->cdpSession) return;
+  if (!ctx) return;
+  // Held for the whole call: detach() must not free the session mid-swap.
+  std::lock_guard<std::mutex> sessionLock(ctx->cdpSessionMutex);
+  if (!ctx->cdpSession) return;
   Session* session = ctx->cdpSession;
   std::lock_guard<std::mutex> lock(session->agentMutex);
   if (!session->agent) return;
@@ -182,22 +189,28 @@ void resetAgent(ContextJni* ctx) {
     // dispose, which clears breakpoints) are safe — they keep their targets
     // alive — and must survive.
     std::lock_guard<std::mutex> queueLock(session->queueMutex);
-      session->taskQueue.clear();
+    session->taskQueue.clear();
   }
   cdp::State state = session->agent->getState();
   session->agent = createAgent(session, std::move(state));
 }
 
 void drainTasks(ContextJni* ctx) {
-  if (!ctx || !ctx->cdpSession) return;
-  Session* session = ctx->cdpSession;
+  if (!ctx) return;
   for (;;) {
     debugger::RuntimeTask task;
     {
-      std::lock_guard<std::mutex> lock(session->queueMutex);
-      if (session->taskQueue.empty()) return;
-      task = std::move(session->taskQueue.front());
-      session->taskQueue.pop_front();
+      // Only the queue pop is locked: detach() runs on this same (JS) thread,
+      // so the session cannot be freed while the task executes.
+      std::lock_guard<std::mutex> sessionLock(ctx->cdpSessionMutex);
+      if (!ctx->cdpSession) return;
+      Session* session = ctx->cdpSession;
+      {
+        std::lock_guard<std::mutex> lock(session->queueMutex);
+        if (session->taskQueue.empty()) return;
+        task = std::move(session->taskQueue.front());
+        session->taskQueue.pop_front();
+      }
     }
     // RuntimeTaskRunner wraps tasks so a task already executed via the
     // AsyncDebuggerAPI interrupt path is a no-op here (and vice versa).
@@ -206,9 +219,14 @@ void drainTasks(ContextJni* ctx) {
 }
 
 void detach(ContextJni* ctx) {
-  if (!ctx || !ctx->cdpSession) return;
-  Session* session = ctx->cdpSession;
-  ctx->cdpSession = nullptr;
+  if (!ctx) return;
+  Session* session;
+  {
+    std::lock_guard<std::mutex> sessionLock(ctx->cdpSessionMutex);
+    session = ctx->cdpSession;
+    if (!session) return;
+    ctx->cdpSession = nullptr;
+  }
 
   // The agent must go first: it uses the debug API and may still invoke our
   // callbacks (which reference the session) while being destroyed.

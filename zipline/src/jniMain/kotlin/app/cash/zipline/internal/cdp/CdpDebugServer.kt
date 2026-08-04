@@ -114,7 +114,7 @@ internal class CdpDebugServer(
             return
           }
           WebSocketProtocol.writeWebSocketUpgrade(output, key)
-          session.addClient(output)
+          session.addClient(output, socket)
           try {
             WebSocketProtocol.readFrames(input, output) { text ->
               session.onCdpMessage(text)
@@ -139,13 +139,12 @@ internal class CdpDebugServer(
   }
 
   private fun targetsJson(host: String): String {
-    // Serve the DevTools frontend from the Zipline development server (the same
-    // host the scripts' URLs point at), so debugging does not depend on a
-    // hosted frontend (chrome-devtools-frontend.appspot.com is unreliable).
-    val frontendBase = scriptUrlOrigin() ?: "http://localhost:8080"
+    // Point at Chrome's bundled DevTools frontend (chrome://inspect opens this
+    // for discovered targets). The RN fusebox frontend remains available from
+    // the dev server at /debugger-frontend/rn_fusebox.html?ws=<host>/...
     val entries = sessions.map { session ->
       val wsUrl = "ws://$host/devtools/page/${session.id}"
-      val frontendUrl = "$frontendBase/debugger-frontend/rn_fusebox.html" +
+      val frontendUrl = "devtools://devtools/bundled/inspector.html" +
         "?ws=$host/devtools/page/${session.id}"
       """{"description":"Hermes JS engine",""" +
         """"devtoolsFrontendUrl":"$frontendUrl",""" +
@@ -155,22 +154,13 @@ internal class CdpDebugServer(
     return entries.joinToString(prefix = "[", postfix = "]")
   }
 
-  private var firstScriptOrigin: String? = null
-
-  private fun scriptUrlOrigin(): String? {
-    firstScriptOrigin?.let { return it }
-    val url = sessions.firstNotNullOfOrNull { it.scriptUrlForOrigin() } ?: return null
-    val match = Regex("""^https?://[^/]+""").find(url) ?: return null
-    firstScriptOrigin = match.value
-    return firstScriptOrigin
-  }
-
   internal inner class DebugSession(
     val id: String,
     val jsEngine: JsEngine,
     private val scope: CoroutineScope,
   ) {
     private val clients = CopyOnWriteArrayList<java.io.OutputStream>()
+    private val clientSockets = java.util.concurrent.ConcurrentHashMap<java.io.OutputStream, Socket>()
     private val drainScheduled = AtomicBoolean(false)
 
     /** scriptId -> script URL, observed from Debugger.scriptParsed events. */
@@ -181,6 +171,16 @@ internal class CdpDebugServer(
     private val nextStreamId = java.util.concurrent.atomic.AtomicLong(1)
     private val json = Json { ignoreUnknownKeys = true }
 
+    /** Ids of Debugger.enable requests whose responses need a debuggerId injected. */
+    private val pendingDebuggerEnableIds = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
+
+    /**
+     * Ids of Runtime.enable requests; the execution context must be (re-)announced
+     * after their responses, because frontends discard executionContextCreated
+     * events received while the Runtime domain is disabled.
+     */
+    private val pendingRuntimeEnableIds = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
+
     val listener = object : CdpListener {
       override fun onMessage(json: String) {
         // DevTools persists breakpoints per URL across windows and engine reloads,
@@ -188,7 +188,7 @@ internal class CdpDebugServer(
         // agent answers those with an "Unknown breakpoint ID" error and the
         // frontend then keeps showing the breakpoint forever. Make removal
         // idempotent: swallow that specific error so the frontend forgets it.
-        val out = if (json.contains("Unknown breakpoint ID")) {
+        var out = if (json.contains("Unknown breakpoint ID")) {
           val id = this@DebugSession.json.parseToJsonElement(json).asObject()?.get("id").asString()
           buildJsonObject {
             put("id", id?.toLongOrNull() ?: 0L)
@@ -199,11 +199,24 @@ internal class CdpDebugServer(
         } else {
           json
         }
+        // The Hermes agent answers Debugger.enable with an empty result, but V8
+        // returns a unique debuggerId and stock Chrome DevTools' breakpoint
+        // model depends on it (without it, gutter toggles are no-ops).
+        val responseId = RUNTIME_RESPONSE_ID.find(out)?.groupValues?.get(1)?.toLongOrNull()
+        if (responseId != null && pendingDebuggerEnableIds.remove(responseId) &&
+          !out.contains("debuggerId")
+        ) {
+          out = """{"id":$responseId,"result":{"debuggerId":"$DEBUGGER_ID"}}"""
+        }
         log("info", "Zipline CDP: => ${out.take(MAX_LOG_CHARS)}", null)
         recordScriptParsed(out)
+        val reannounceContext = responseId != null && pendingRuntimeEnableIds.remove(responseId)
         for (client in clients) {
           try {
-            WebSocketProtocol.sendText(client, json)
+            WebSocketProtocol.sendText(client, out)
+            if (reannounceContext) {
+              WebSocketProtocol.sendText(client, EXECUTION_CONTEXT_CREATED)
+            }
           } catch (t: Throwable) {
             // A dead client must not starve the others.
             log("warn", "Zipline CDP: dropping client: ${t.message}", null)
@@ -232,6 +245,12 @@ internal class CdpDebugServer(
         null
       }
       val method = message?.get("method").asString()
+      if (method == "Debugger.enable") {
+        message?.get("id").asString()?.toLongOrNull()?.let(pendingDebuggerEnableIds::add)
+      }
+      if (method == "Runtime.enable") {
+        message?.get("id").asString()?.toLongOrNull()?.let(pendingRuntimeEnableIds::add)
+      }
       if (method == "Debugger.getScriptSource") {
         val requestId = message?.get("id").asString()
         val scriptId = message?.get("params").asObject()?.get("scriptId").asString()
@@ -426,7 +445,8 @@ internal class CdpDebugServer(
       var shift = 0
       var value = 0
       for (c in segment) {
-        val digit = VLQ_DIGITS[c.code] ?: return values.copyOf(count)
+        val digit = if (c.code < VLQ_DIGITS.size) VLQ_DIGITS[c.code] else -1
+        if (digit < 0) return values.copyOf(count)
         value = value or ((digit and 0x1F) shl shift)
         if (digit and 0x20 == 0) {
           values[count++] = if (value and 1 == 1) -(value ushr 1) else value ushr 1
@@ -486,7 +506,8 @@ internal class CdpDebugServer(
           val available = (stream.content.length - from).coerceAtLeast(0)
           val end = from + minOf(available, limit)
           val chunk = stream.content.substring(from, end)
-          stream.position = end
+          // Random-access reads (explicit offset) don't advance the stream.
+          if (offset == null) stream.position = end
           putJsonObject("result") {
             put("data", chunk)
             // DevTools discards data when eof is true, so only report eof on an
@@ -565,19 +586,37 @@ internal class CdpDebugServer(
       }
     }
 
-    fun addClient(output: java.io.OutputStream) {
+    fun addClient(output: java.io.OutputStream, socket: Socket) {
+      // Single-debugger semantics: a new DevTools client replaces any previous
+      // one. Sharing one agent across clients cross-talks responses and events
+      // (each frontend sees the other's traffic), which breaks client-side
+      // state like the breakpoint model.
+      if (clients.isNotEmpty()) {
+        for (old in clients) {
+          try {
+            WebSocketProtocol.sendClose(old)
+          } catch (_: IOException) {
+          }
+          clientSockets.remove(old)?.closeQuietly()
+        }
+        clients.clear()
+        // Fresh agent so the new client re-receives scriptParsed events when
+        // it enables the Debugger domain (breakpoint state is preserved).
+        jsEngine.cdpResetAgent()
+      }
       clients.add(output)
+      clientSockets[output] = socket
       // The Hermes CDP agent never reports its execution context, and without
       // one the DevTools console has nowhere to evaluate (input silently
-      // vanishes). Announce the default context to the new client.
-      sendSafe(
-        output,
-        """{"method":"Runtime.executionContextCreated","params":{"context":{"id":1,"origin":"","name":"Hermes","auxData":{"isDefault":true}}}}""",
-      )
+      // vanishes). Announce the default context to the new client. Stock Chrome
+      // DevTools discards it (Runtime domain not yet enabled) and gets a second
+      // announcement after its Runtime.enable instead.
+      sendSafe(output, EXECUTION_CONTEXT_CREATED)
     }
 
     fun removeClient(output: java.io.OutputStream) {
       clients.remove(output)
+      clientSockets.remove(output)
       if (clients.isEmpty()) {
         // The next client gets a fresh agent so it re-receives scriptParsed
         // events when it enables the Debugger domain (breakpoint state is
@@ -600,16 +639,31 @@ internal class CdpDebugServer(
           WebSocketProtocol.sendClose(client)
         } catch (_: IOException) {
         }
+        clientSockets.remove(client)?.closeQuietly()
       }
       clients.clear()
     }
-
-    fun scriptUrlForOrigin(): String? = scriptUrls.values.firstOrNull()
   }
 
   companion object {
     /** Cap CDP traffic logging so big payloads (script sources) don't flood logcat. */
     private const val MAX_LOG_CHARS = 400
+
+    /** Matches the "id" of an agent response, for response post-processing. */
+    private val RUNTIME_RESPONSE_ID = Regex(""""id":(\d+)""")
+
+    /**
+     * Stable debuggerId reported in Debugger.enable responses, mimicking V8.
+     * Stock Chrome DevTools' breakpoint model misbehaves without one.
+     */
+    private const val DEBUGGER_ID = "zipline-hermes-debugger"
+
+    /**
+     * The Hermes agent never reports an execution context; without one the
+     * DevTools console has nowhere to evaluate (input silently vanishes).
+     */
+    private const val EXECUTION_CONTEXT_CREATED =
+      """{"method":"Runtime.executionContextCreated","params":{"context":{"id":1,"origin":"","name":"Hermes","auxData":{"isDefault":true}}}}"""
 
     private val VLQ_DIGITS: IntArray = IntArray(128) { -1 }.also { table ->
       "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".forEachIndexed { i, c ->
