@@ -288,6 +288,10 @@ internal class ZiplineCompiler(
    * Extracts module dependencies from the UMD wrapper's `define([...])` header,
    * e.g. `define(['exports', './foo.js'], factory)` -> `["./foo.js"]`.
    * Used in source mode where there is no bytecode to inspect.
+   *
+   * This regex-parses the first `define([` occurrence: it assumes compiler-
+   * generated Kotlin/JS UMD output (single top-level `define` call, simple
+   * string-literal dependency names), not arbitrary JavaScript.
    */
   private fun parseDefineDependencies(source: String): List<String> {
     val match = Regex("""define\(\s*\[([^]]*)]""").find(source) ?: return emptyList()

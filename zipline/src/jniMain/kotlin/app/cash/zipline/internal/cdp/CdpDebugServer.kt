@@ -5,6 +5,7 @@ import app.cash.zipline.JsEngine
 import app.cash.zipline.internal.log
 import java.io.IOException
 import java.net.HttpURLConnection
+import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URL
@@ -42,7 +43,10 @@ internal class CdpDebugServer(
   private var serverSocket: ServerSocket? = null
 
   fun start() {
-    val socket = ServerSocket(port)
+    // Loopback only: the server grants unauthenticated Runtime.evaluate access
+    // to the app's JS context, so it must not be reachable from the network.
+    // Devices reach it through adb forward/reverse, which work with loopback.
+    val socket = ServerSocket(port, 50, InetAddress.getByName("127.0.0.1"))
     serverSocket = socket
     val thread = Thread(
       {
@@ -62,6 +66,9 @@ internal class CdpDebugServer(
     thread.start()
   }
 
+  // Synchronized: Zipline instances may be created concurrently, and the
+  // smallest-free-id check-then-act below must not hand out duplicate ids.
+  @Synchronized
   fun attach(jsEngine: JsEngine, scope: CoroutineScope) {
     // Assign the smallest free id so the usual single-engine flow keeps a
     // stable "1" across hot-reloads (DevTools URLs stay valid).
@@ -77,6 +84,7 @@ internal class CdpDebugServer(
     log("info", "Zipline CDP: debug session ${session.id} attached (port $port)", null)
   }
 
+  @Synchronized
   fun detach(jsEngine: JsEngine) {
     val session = sessions.firstOrNull { it.jsEngine === jsEngine } ?: return
     sessions.remove(session)
@@ -90,7 +98,12 @@ internal class CdpDebugServer(
       val output = socket.getOutputStream()
       val request = WebSocketProtocol.readHttpRequest(input) ?: return socket.closeQuietly()
       val path = request.path.substringBefore('?')
-      val host = request.headers["host"] ?: "localhost:$port"
+      // The Host header is interpolated into JSON responses; strip anything
+      // that isn't a valid host:port character so it can't break the JSON.
+      val host = request.headers["host"]
+        ?.filter { it.isLetterOrDigit() || it in ".:-[]" }
+        ?.takeIf { it.isNotEmpty() }
+        ?: "localhost:$port"
 
       when {
         path == "/json/version" -> WebSocketProtocol.writeHttpResponse(
@@ -501,8 +514,8 @@ internal class CdpDebugServer(
             put("message", "Invalid stream handle")
           }
         } else {
-          val from = offset ?: stream.position
-          val limit = size ?: Int.MAX_VALUE
+          val from = (offset ?: stream.position).coerceIn(0, stream.content.length)
+          val limit = size?.coerceAtLeast(0) ?: Int.MAX_VALUE
           val available = (stream.content.length - from).coerceAtLeast(0)
           val end = from + minOf(available, limit)
           val chunk = stream.content.substring(from, end)

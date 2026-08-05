@@ -66,15 +66,15 @@ JNIEnv* envForCurrentThread(JavaVM* vm, bool* attachedOut) {
   return env;
 }
 
-void callListenerVoid(Session* session, jmethodID method, jstring arg) {
-  bool attached;
-  JNIEnv* env = envForCurrentThread(session->javaVm, &attached);
-  if (!env) return;
+// Calls a void listener method with a single jstring arg (may be null).
+// The caller owns the env: it must have obtained it via envForCurrentThread
+// and is responsible for detaching, so each callback attaches at most once.
+void callListenerVoid(JNIEnv* env, Session* session, jmethodID method,
+                      jstring arg) {
   env->CallVoidMethod(session->listener, method, arg);
   if (arg) env->DeleteLocalRef(arg);
   // Listener failures must not crash the engine thread.
   if (env->ExceptionCheck()) env->ExceptionClear();
-  if (attached) session->javaVm->DetachCurrentThread();
 }
 
 void sendMessage(Session* session, const std::string& json) {
@@ -89,12 +89,16 @@ void sendMessage(Session* session, const std::string& json) {
   JNIEnv* env = envForCurrentThread(session->javaVm, &attached);
   if (!env) return;
   jstring j = zipline::utf8ToJniString(env, json);
-  callListenerVoid(session, session->onMessageId, j);
+  callListenerVoid(env, session, session->onMessageId, j);
   if (attached) session->javaVm->DetachCurrentThread();
 }
 
 void notifyTasksEnqueued(Session* session) {
-  callListenerVoid(session, session->onTasksEnqueuedId, nullptr);
+  bool attached;
+  JNIEnv* env = envForCurrentThread(session->javaVm, &attached);
+  if (!env) return;
+  callListenerVoid(env, session, session->onTasksEnqueuedId, nullptr);
+  if (attached) session->javaVm->DetachCurrentThread();
 }
 
 // The agent may invoke these callbacks from arbitrary threads (including
@@ -153,6 +157,10 @@ bool attach(ContextJni* ctx, JNIEnv* env, jobject listener) {
   session->javaVm = ctx->javaVm;
   session->ctx = ctx;
   session->listener = env->NewGlobalRef(listener);
+  if (!session->listener) {
+    // Out of memory: the pending OutOfMemoryError propagates to Java.
+    return false;
+  }
   session->onMessageId = onMessageId;
   session->onTasksEnqueuedId = onTasksEnqueuedId;
   session->agent = createAgent(raw, {});

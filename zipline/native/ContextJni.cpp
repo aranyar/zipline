@@ -195,7 +195,7 @@ jobject ContextJni::evaluate(JNIEnv* env, jstring source, jstring fileName) {
   // evaluating more JavaScript. We are on the JS thread here.
   zipline_cdp::drainTasks(this);
 
-  std::string src = toCppString(env, source);
+  std::string src = zipline::jniStringToUtf8(env, source);
   std::string fileNameStr = fileName ? zipline::jniStringToUtf8(env, fileName)
                                      : std::string("zipline-module.js");
 
