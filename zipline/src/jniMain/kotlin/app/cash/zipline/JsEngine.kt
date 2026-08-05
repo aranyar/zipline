@@ -185,22 +185,22 @@ actual class JsEngine private constructor(
    * Starts a CDP debug session on this engine. Returns false when the engine was built without
    * debugger support. [listener] receives outbound CDP messages from arbitrary threads.
    */
-  internal fun cdpAttach(listener: CdpListener): Boolean {
+  internal actual fun cdpAttach(listener: CdpListener): Boolean {
     return cdpAttach(context, listener)
   }
 
   /** Forwards a CDP command (UTF-8 JSON) to the debug session. Safe to call from any thread. */
-  internal fun cdpHandleCommand(json: String) {
+  internal actual fun cdpHandleCommand(json: String) {
     cdpHandleCommand(context, json)
   }
 
   /** Runs queued debugger runtime tasks. Must be called on the JS thread. */
-  internal fun cdpDrainTasks() {
+  internal actual fun cdpDrainTasks() {
     cdpDrainTasks(context)
   }
 
   /** Re-creates the CDP agent (preserving breakpoint state) for the next debugger client. */
-  internal fun cdpResetAgent() {
+  internal actual fun cdpResetAgent() {
     cdpResetAgent(context)
   }
 

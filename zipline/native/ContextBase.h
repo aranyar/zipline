@@ -4,11 +4,16 @@
 #include <hermes/hermes.h>
 
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
 class InboundCallChannel;
 class OutboundCallChannel;
+
+namespace zipline_cdp {
+struct Session;
+}
 
 // The engine context, shared by all platform layers (JNI, Kotlin/Native).
 // It owns the Hermes runtime and the last-error string used by the C API,
@@ -45,6 +50,14 @@ struct ContextBase {
   // emit full debug info (line tables, scoping info, sourceMappingURL magic
   // comments) even when no source map buffer is supplied.
   bool debugCompilation = false;
+
+  // Active CDP debug session, owned by this context (see CdpSession.cpp). Raw
+  // pointer because Session is only defined in the CdpSession translation
+  // unit. Guarded by cdpSessionMutex: CDP commands arrive on transport
+  // threads while detach() (engine close) destroys the session on the JS
+  // thread.
+  std::mutex cdpSessionMutex;
+  zipline_cdp::Session* cdpSession = nullptr;
 
  protected:
   // Channels created through this context; deleted with it.

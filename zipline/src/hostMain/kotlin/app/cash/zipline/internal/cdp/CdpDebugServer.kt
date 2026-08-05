@@ -1,33 +1,32 @@
+@file:OptIn(ExperimentalAtomicApi::class)
+
 package app.cash.zipline.internal.cdp
 
 import app.cash.zipline.CdpListener
 import app.cash.zipline.JsEngine
 import app.cash.zipline.internal.log
-import java.io.IOException
-import java.net.HttpURLConnection
-import java.net.InetAddress
-import java.net.ServerSocket
-import java.net.Socket
-import java.net.URL
-import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.concurrent.atomics.AtomicBoolean
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
+import okio.IOException
 
 /**
  * Exposes a running [JsEngine] to Chrome DevTools via the Chrome DevTools Protocol (CDP).
  *
  * The server speaks enough HTTP for Chrome's target discovery (`/json`, `/json/list`,
  * `/json/version`) and upgrades `/devtools/page/<id>` to a WebSocket that carries CDP messages
- * into the Hermes CDP agent. Typical usage on Android:
+ * into the Hermes CDP agent. Sockets and threads come from the platform transport
+ * (see DebugTransport.kt). Typical usage on Android:
  *
  * ```
  * System.setProperty("app.cash.zipline.cdp.port", "9222") // before Zipline starts
@@ -35,68 +34,64 @@ import kotlinx.serialization.json.putJsonObject
  * adb forward tcp:9222 tcp:9222
  * // then open chrome://inspect, or Chrome with the devtoolsFrontendUrl from /json/list
  * ```
+ *
+ * On Kotlin/Native (iOS), set the ZIPLINE_CDP_PORT environment variable instead.
  */
 internal class CdpDebugServer(
   private val port: Int,
 ) {
-  private val sessions = CopyOnWriteArrayList<DebugSession>()
-  private var serverSocket: ServerSocket? = null
+  private val sessionsLock = DebugLock()
+  private val sessions = mutableListOf<DebugSession>()
+  private var serverSocket: DebugServerSocket? = null
 
   fun start() {
-    // Loopback only: the server grants unauthenticated Runtime.evaluate access
-    // to the app's JS context, so it must not be reachable from the network.
-    // Devices reach it through adb forward/reverse, which work with loopback.
-    val socket = ServerSocket(port, 50, InetAddress.getByName("127.0.0.1"))
+    val socket = DebugServerSocket(port)
     serverSocket = socket
-    val thread = Thread(
-      {
-        log("info", "Zipline CDP debug server listening on port $port", null)
-        while (true) {
-          val client = try {
-            socket.accept()
-          } catch (e: IOException) {
-            break // Server socket closed.
-          }
-          Thread({ handleConnection(client) }, "ZiplineCdp-client").apply { isDaemon = true }.start()
+    startDebugThread("ZiplineCdp-accept") {
+      log("info", "Zipline CDP debug server listening on port $port", null)
+      while (true) {
+        val client = try {
+          socket.accept()
+        } catch (e: IOException) {
+          break // Server socket closed.
         }
-      },
-      "ZiplineCdp-accept",
-    )
-    thread.isDaemon = true
-    thread.start()
-  }
-
-  // Synchronized: Zipline instances may be created concurrently, and the
-  // smallest-free-id check-then-act below must not hand out duplicate ids.
-  @Synchronized
-  fun attach(jsEngine: JsEngine, scope: CoroutineScope) {
-    // Assign the smallest free id so the usual single-engine flow keeps a
-    // stable "1" across hot-reloads (DevTools URLs stay valid).
-    val id = generateSequence(1L) { it + 1 }
-      .map { it.toString() }
-      .first { candidate -> sessions.none { it.id == candidate } }
-    val session = DebugSession(id, jsEngine, scope)
-    if (!jsEngine.cdpAttach(session.listener)) {
-      log("warn", "Zipline CDP: engine does not support debugging (HERMES_ENABLE_DEBUGGER off?)", null)
-      return
+        startDebugThread("ZiplineCdp-client") { handleConnection(client) }
+      }
     }
-    sessions.add(session)
-    log("info", "Zipline CDP: debug session ${session.id} attached (port $port)", null)
   }
 
-  @Synchronized
+  fun attach(jsEngine: JsEngine, scope: CoroutineScope) {
+    // Locked: Zipline instances may be created concurrently, and the
+    // smallest-free-id check-then-act below must not hand out duplicate ids.
+    sessionsLock.withLock {
+      // Assign the smallest free id so the usual single-engine flow keeps a
+      // stable "1" across hot-reloads (DevTools URLs stay valid).
+      val id = generateSequence(1L) { it + 1 }
+        .map { it.toString() }
+        .first { candidate -> sessions.none { it.id == candidate } }
+      val session = DebugSession(id, jsEngine, scope)
+      if (!jsEngine.cdpAttach(session.listener)) {
+        log("warn", "Zipline CDP: engine does not support debugging (HERMES_ENABLE_DEBUGGER off?)", null)
+      } else {
+        sessions.add(session)
+        log("info", "Zipline CDP: debug session ${session.id} attached (port $port)", null)
+      }
+    }
+  }
+
   fun detach(jsEngine: JsEngine) {
-    val session = sessions.firstOrNull { it.jsEngine === jsEngine } ?: return
-    sessions.remove(session)
+    val session = sessionsLock.withLock {
+      val found = sessions.firstOrNull { it.jsEngine === jsEngine }
+      if (found != null) sessions.remove(found)
+      found
+    } ?: return
     session.close()
   }
 
-  private fun handleConnection(socket: Socket) {
+  private fun handleConnection(socket: DebugSocket) {
     try {
-      socket.tcpNoDelay = true
-      val input = socket.getInputStream()
-      val output = socket.getOutputStream()
-      val request = WebSocketProtocol.readHttpRequest(input) ?: return socket.closeQuietly()
+      socket.setTcpNoDelay()
+      val request = WebSocketProtocol.readHttpRequest(socket) ?: return socket.closeQuietly()
       val path = request.path.substringBefore('?')
       // The Host header is interpolated into JSON responses; strip anything
       // that isn't a valid host:port character so it can't break the JSON.
@@ -107,39 +102,39 @@ internal class CdpDebugServer(
 
       when {
         path == "/json/version" -> WebSocketProtocol.writeHttpResponse(
-          output, 200, "OK",
+          socket, 200, "OK",
           """{"Browser":"Zipline/Hermes","Protocol-Version":"1.3",""" +
-            """"webSocketDebuggerUrl":"ws://$host/devtools/page/${sessions.firstOrNull()?.id ?: ""}"}""",
+            """"webSocketDebuggerUrl":"ws://$host/devtools/page/${firstSessionId() ?: ""}"}""",
         ).also { socket.closeQuietly() }
 
         path == "/json" || path == "/json/list" -> WebSocketProtocol.writeHttpResponse(
-          output, 200, "OK", targetsJson(host),
+          socket, 200, "OK", targetsJson(host),
         ).also { socket.closeQuietly() }
 
         path.startsWith("/devtools/page/") -> {
           val id = path.removePrefix("/devtools/page/")
-          val session = sessions.firstOrNull { it.id == id }
+          val session = sessionsLock.withLock { sessions.firstOrNull { it.id == id } }
           val key = request.headers["sec-websocket-key"]
           val upgrade = request.headers["upgrade"]?.lowercase()
           if (session == null || key == null || upgrade != "websocket") {
-            WebSocketProtocol.writeHttpResponse(output, 404, "Not Found", "[]")
+            WebSocketProtocol.writeHttpResponse(socket, 404, "Not Found", "[]")
             socket.closeQuietly()
             return
           }
-          WebSocketProtocol.writeWebSocketUpgrade(output, key)
-          session.addClient(output, socket)
+          WebSocketProtocol.writeWebSocketUpgrade(socket, key)
+          session.addClient(socket)
           try {
-            WebSocketProtocol.readFrames(input, output) { text ->
+            WebSocketProtocol.readFrames(socket) { text ->
               session.onCdpMessage(text)
             }
           } finally {
-            session.removeClient(output)
+            session.removeClient(socket)
             socket.closeQuietly()
           }
         }
 
         else -> {
-          WebSocketProtocol.writeHttpResponse(output, 404, "Not Found", "[]")
+          WebSocketProtocol.writeHttpResponse(socket, 404, "Not Found", "[]")
           socket.closeQuietly()
         }
       }
@@ -151,11 +146,15 @@ internal class CdpDebugServer(
     }
   }
 
+  private fun firstSessionId(): String? =
+    sessionsLock.withLock { sessions.firstOrNull()?.id }
+
   private fun targetsJson(host: String): String {
     // Point at Chrome's bundled DevTools frontend (chrome://inspect opens this
     // for discovered targets). The RN fusebox frontend remains available from
     // the dev server at /debugger-frontend/rn_fusebox.html?ws=<host>/...
-    val entries = sessions.map { session ->
+    val snapshot = sessionsLock.withLock { sessions.toList() }
+    val entries = snapshot.map { session ->
       val wsUrl = "ws://$host/devtools/page/${session.id}"
       val frontendUrl = "devtools://devtools/bundled/inspector.html" +
         "?ws=$host/devtools/page/${session.id}"
@@ -172,27 +171,29 @@ internal class CdpDebugServer(
     val jsEngine: JsEngine,
     private val scope: CoroutineScope,
   ) {
-    private val clients = CopyOnWriteArrayList<java.io.OutputStream>()
-    private val clientSockets = java.util.concurrent.ConcurrentHashMap<java.io.OutputStream, Socket>()
+    private val clientsLock = DebugLock()
+    private val clients = mutableListOf<DebugSocket>()
     private val drainScheduled = AtomicBoolean(false)
 
+    private val mapsLock = DebugLock()
+
     /** scriptId -> script URL, observed from Debugger.scriptParsed events. */
-    private val scriptUrls = ConcurrentHashMap<String, String>()
+    private val scriptUrls = mutableMapOf<String, String>()
 
     /** Open IO streams for the Network.loadNetworkResource + IO.read protocol. */
-    private val ioStreams = ConcurrentHashMap<String, IoStream>()
-    private val nextStreamId = java.util.concurrent.atomic.AtomicLong(1)
+    private val ioStreams = mutableMapOf<String, IoStream>()
+    private var nextStreamId = 1L
     private val json = Json { ignoreUnknownKeys = true }
 
     /** Ids of Debugger.enable requests whose responses need a debuggerId injected. */
-    private val pendingDebuggerEnableIds = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
+    private val pendingDebuggerEnableIds = mutableSetOf<Long>()
 
     /**
      * Ids of Runtime.enable requests; the execution context must be (re-)announced
      * after their responses, because frontends discard executionContextCreated
      * events received while the Runtime domain is disabled.
      */
-    private val pendingRuntimeEnableIds = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
+    private val pendingRuntimeEnableIds = mutableSetOf<Long>()
 
     val listener = object : CdpListener {
       override fun onMessage(json: String) {
@@ -216,15 +217,18 @@ internal class CdpDebugServer(
         // returns a unique debuggerId and stock Chrome DevTools' breakpoint
         // model depends on it (without it, gutter toggles are no-ops).
         val responseId = RUNTIME_RESPONSE_ID.find(out)?.groupValues?.get(1)?.toLongOrNull()
-        if (responseId != null && pendingDebuggerEnableIds.remove(responseId) &&
-          !out.contains("debuggerId")
-        ) {
+        val isDebuggerEnableResponse = responseId != null && mapsLock.withLock {
+          pendingDebuggerEnableIds.remove(responseId)
+        }
+        if (isDebuggerEnableResponse && !out.contains("debuggerId")) {
           out = """{"id":$responseId,"result":{"debuggerId":"$DEBUGGER_ID"}}"""
         }
         log("info", "Zipline CDP: => ${out.take(MAX_LOG_CHARS)}", null)
         recordScriptParsed(out)
-        val reannounceContext = responseId != null && pendingRuntimeEnableIds.remove(responseId)
-        for (client in clients) {
+        val reannounceContext = responseId != null && mapsLock.withLock {
+          pendingRuntimeEnableIds.remove(responseId)
+        }
+        for (client in clientsLock.withLock { clients.toList() }) {
           try {
             WebSocketProtocol.sendText(client, out)
             if (reannounceContext) {
@@ -233,7 +237,7 @@ internal class CdpDebugServer(
           } catch (t: Throwable) {
             // A dead client must not starve the others.
             log("warn", "Zipline CDP: dropping client: ${t.message}", null)
-            clients.remove(client)
+            clientsLock.withLock { clients.remove(client) }
           }
         }
       }
@@ -259,15 +263,19 @@ internal class CdpDebugServer(
       }
       val method = message?.get("method").asString()
       if (method == "Debugger.enable") {
-        message?.get("id").asString()?.toLongOrNull()?.let(pendingDebuggerEnableIds::add)
+        message?.get("id").asString()?.toLongOrNull()?.let { id ->
+          mapsLock.withLock { pendingDebuggerEnableIds.add(id) }
+        }
       }
       if (method == "Runtime.enable") {
-        message?.get("id").asString()?.toLongOrNull()?.let(pendingRuntimeEnableIds::add)
+        message?.get("id").asString()?.toLongOrNull()?.let { id ->
+          mapsLock.withLock { pendingRuntimeEnableIds.add(id) }
+        }
       }
       if (method == "Debugger.getScriptSource") {
         val requestId = message?.get("id").asString()
         val scriptId = message?.get("params").asObject()?.get("scriptId").asString()
-        val url = scriptId?.let(scriptUrls::get)
+        val url = scriptId?.let { sid -> mapsLock.withLock { scriptUrls[sid] } }
         if (requestId != null && url != null) {
           serveScriptSource(requestId, url)
           return
@@ -310,7 +318,11 @@ internal class CdpDebugServer(
         val params = message?.get("params").asObject()
         val handle = params?.get("handle").asString()
         if (requestId != null && handle != null) {
-          serveIoRead(requestId, handle, params?.get("offset").asString()?.toIntOrNull(), params?.get("size").asString()?.toIntOrNull())
+          serveIoRead(
+            requestId, handle,
+            params?.get("offset").asString()?.toIntOrNull(),
+            params?.get("size").asString()?.toIntOrNull(),
+          )
           return
         }
       }
@@ -318,7 +330,7 @@ internal class CdpDebugServer(
         val requestId = message?.get("id").asString()
         val handle = message?.get("params").asObject()?.get("handle").asString()
         if (requestId != null && handle != null) {
-          ioStreams.remove(handle)
+          mapsLock.withLock { ioStreams.remove(handle) }
           sendToClients(buildJsonObject {
             put("id", requestId.toLongOrNull() ?: 0L)
             putJsonObject("result") {}
@@ -339,13 +351,13 @@ internal class CdpDebugServer(
       val scriptId = params["scriptId"].asString() ?: return
       val url = params["url"].asString() ?: return
       if (url.isNotEmpty()) {
-        scriptUrls[scriptId] = url
+        mapsLock.withLock { scriptUrls[scriptId] = url }
       }
     }
 
     private fun serveScriptSource(requestId: String, url: String) {
       // Fetch off the WebSocket reader thread; reply directly to the clients.
-      Thread {
+      startDebugThread("ZiplineCdp-source") {
         val source = fetchScriptSource(url)
         val response = if (source != null) {
           buildJsonObject {
@@ -362,10 +374,6 @@ internal class CdpDebugServer(
           }.toString()
         }
         sendToClients(response)
-      }.apply {
-        isDaemon = true
-        name = "ZiplineCdp-source"
-        start()
       }
     }
 
@@ -377,18 +385,14 @@ internal class CdpDebugServer(
       endLine: Int,
       endCol: Int,
     ) {
-      Thread {
+      startDebugThread("ZiplineCdp-possiblebp") {
         val locations = possibleBreakpoints(scriptId, startLine, startCol, endLine, endCol)
         sendToClients(buildJsonObject {
           put("id", requestId.toLongOrNull() ?: 0L)
           putJsonObject("result") {
-            put("locations", kotlinx.serialization.json.JsonArray(locations))
+            put("locations", JsonArray(locations))
           }
         }.toString())
-      }.apply {
-        isDaemon = true
-        name = "ZiplineCdp-possiblebp"
-        start()
       }
     }
 
@@ -404,8 +408,8 @@ internal class CdpDebugServer(
       startCol: Int,
       endLine: Int,
       endCol: Int,
-    ): List<kotlinx.serialization.json.JsonElement> {
-      val url = scriptUrls[scriptId.toString()] ?: return emptyList()
+    ): List<JsonElement> {
+      val url = mapsLock.withLock { scriptUrls[scriptId.toString()] } ?: return emptyList()
       val positions = sourceMapPositions(url)
       val inRange = positions.filter { (line, col) ->
         (line > startLine || (line == startLine && col >= startCol)) &&
@@ -420,35 +424,40 @@ internal class CdpDebugServer(
       }
     }
 
-    private val sourceMapCache = ConcurrentHashMap<String, List<Pair<Int, Int>>>()
+    private val sourceMapCache = mutableMapOf<String, List<Pair<Int, Int>>>()
 
     private fun sourceMapPositions(scriptUrl: String): List<Pair<Int, Int>> {
-      return sourceMapCache.getOrPut(scriptUrl) {
-        val mapText = fetchScriptSource("$scriptUrl.map") ?: return@getOrPut emptyList()
-        val mapJson = try {
-          json.parseToJsonElement(mapText).asObject()
-        } catch (_: Exception) {
-          null
-        } ?: return@getOrPut emptyList()
-        val mappings = mapJson["mappings"].asString() ?: return@getOrPut emptyList()
-        val result = ArrayList<Pair<Int, Int>>()
-        var line = 0
-        for (lineMappings in mappings.split(';')) {
-          if (lineMappings.isNotEmpty()) {
-            var column = 0
-            for (segment in lineMappings.split(',')) {
-              if (segment.isEmpty()) continue
-              val fields = decodeVlq(segment)
-              if (fields.isNotEmpty()) {
-                column += fields[0]
-                result.add(line to column)
-              }
+      mapsLock.withLock { sourceMapCache[scriptUrl] }?.let { return it }
+      val positions = computeSourceMapPositions(scriptUrl)
+      mapsLock.withLock { sourceMapCache[scriptUrl] = positions }
+      return positions
+    }
+
+    private fun computeSourceMapPositions(scriptUrl: String): List<Pair<Int, Int>> {
+      val mapText = fetchScriptSource("$scriptUrl.map") ?: return emptyList()
+      val mapJson = try {
+        json.parseToJsonElement(mapText).asObject()
+      } catch (_: Exception) {
+        null
+      } ?: return emptyList()
+      val mappings = mapJson["mappings"].asString() ?: return emptyList()
+      val result = ArrayList<Pair<Int, Int>>()
+      var line = 0
+      for (lineMappings in mappings.split(';')) {
+        if (lineMappings.isNotEmpty()) {
+          var column = 0
+          for (segment in lineMappings.split(',')) {
+            if (segment.isEmpty()) continue
+            val fields = decodeVlq(segment)
+            if (fields.isNotEmpty()) {
+              column += fields[0]
+              result.add(line to column)
             }
           }
-          line += 1
         }
-        result
+        line += 1
       }
+      return result
     }
 
     /** Decodes one base64-VLQ segment into signed delta values. */
@@ -474,7 +483,7 @@ internal class CdpDebugServer(
     }
 
     private fun serveNetworkResource(requestId: String, url: String) {
-      Thread {
+      startDebugThread("ZiplineCdp-resource") {
         val content = fetchScriptSource(url)
         val response = buildJsonObject {
           put("id", requestId.toLongOrNull() ?: 0L)
@@ -482,8 +491,11 @@ internal class CdpDebugServer(
             putJsonObject("resource") {
               put("url", url)
               if (content != null) {
-                val handle = "zipline-stream-${nextStreamId.getAndIncrement()}"
-                ioStreams[handle] = IoStream(content)
+                val handle = mapsLock.withLock {
+                  val h = "zipline-stream-${nextStreamId++}"
+                  ioStreams[h] = IoStream(content)
+                  h
+                }
                 put("success", true)
                 put("httpStatusCode", 200)
                 put("stream", handle)
@@ -497,85 +509,75 @@ internal class CdpDebugServer(
           }
         }.toString()
         sendToClients(response)
-      }.apply {
-        isDaemon = true
-        name = "ZiplineCdp-resource"
-        start()
       }
     }
 
     private fun serveIoRead(requestId: String, handle: String, offset: Int?, size: Int?) {
-      val stream = ioStreams[handle]
-      val response = buildJsonObject {
-        put("id", requestId.toLongOrNull() ?: 0L)
-        if (stream == null) {
-          putJsonObject("error") {
-            put("code", -32000)
-            put("message", "Invalid stream handle")
-          }
-        } else {
-          val from = (offset ?: stream.position).coerceIn(0, stream.content.length)
-          val limit = size?.coerceAtLeast(0) ?: Int.MAX_VALUE
-          val available = (stream.content.length - from).coerceAtLeast(0)
-          val end = from + minOf(available, limit)
-          val chunk = stream.content.substring(from, end)
-          // Random-access reads (explicit offset) don't advance the stream.
-          if (offset == null) stream.position = end
-          putJsonObject("result") {
-            put("data", chunk)
-            // DevTools discards data when eof is true, so only report eof on an
-            // empty read after all content has been delivered.
-            put("eof", chunk.isEmpty())
+      val response = mapsLock.withLock {
+        val stream = ioStreams[handle]
+        buildJsonObject {
+          put("id", requestId.toLongOrNull() ?: 0L)
+          if (stream == null) {
+            putJsonObject("error") {
+              put("code", -32000)
+              put("message", "Invalid stream handle")
+            }
+          } else {
+            val from = (offset ?: stream.position).coerceIn(0, stream.content.length)
+            val limit = size?.coerceAtLeast(0) ?: Int.MAX_VALUE
+            val available = (stream.content.length - from).coerceAtLeast(0)
+            val end = from + minOf(available, limit)
+            val chunk = stream.content.substring(from, end)
+            // Random-access reads (explicit offset) don't advance the stream.
+            if (offset == null) stream.position = end
+            putJsonObject("result") {
+              put("data", chunk)
+              // DevTools discards data when eof is true, so only report eof on an
+              // empty read after all content has been delivered.
+              put("eof", chunk.isEmpty())
+            }
           }
         }
-      }.toString()
-      sendToClients(response)
+      }
+      sendToClients(response.toString())
     }
 
     private fun sendToClients(json: String) {
-      for (client in clients) {
+      for (client in clientsLock.withLock { clients.toList() }) {
         try {
           WebSocketProtocol.sendText(client, json)
         } catch (_: IOException) {
-          clients.remove(client)
+          clientsLock.withLock { clients.remove(client) }
         }
       }
     }
 
     /** Bounds concurrent fetches to the dev server (bursts exhaust the HTTP keep-alive pool). */
-    private val fetchPermits = java.util.concurrent.Semaphore(4)
+    private val fetchPermits = DebugSemaphore(4)
 
     private fun fetchScriptSource(url: String): String? {
       // The URL points at the dev server on the host machine. Best path is the
-      // adb reverse tunnel (dev server sets it up): the device's 127.0.0.1 then
-      // reaches the host. Note we must use the IP literal — some emulators can't
-      // even resolve "localhost" (UnknownHostException). Fallback: the emulator
-      // NAT alias 10.0.2.2. DevTools does not retry failed loads, so each
-      // candidate gets two attempts.
+      // loopback tunnel (adb reverse on Android; the simulator shares the host
+      // network on iOS/macOS): the device's 127.0.0.1 then reaches the host.
+      // Note we must use the IP literal — some emulators can't even resolve
+      // "localhost" (UnknownHostException). Platforms may add extra candidates
+      // (e.g. the Android emulator NAT alias 10.0.2.2). DevTools does not retry
+      // failed loads, so each candidate gets two attempts.
       val candidates = buildList {
         add(url.replace("://localhost:", "://127.0.0.1:"))
         add(url)
-        add(url.replace("://localhost:", "://10.0.2.2:").replace("://127.0.0.1:", "://10.0.2.2:"))
+        addAll(extraFetchCandidates(url))
       }.distinct()
       fetchPermits.acquire()
       try {
         for (candidate in candidates) {
           repeat(2) {
             try {
-              val connection = URL(candidate).openConnection() as HttpURLConnection
-              connection.connectTimeout = 5000
-              connection.readTimeout = 15000
-              connection.setRequestProperty("Connection", "close")
-              try {
-                if (connection.responseCode == 200) {
-                  return connection.inputStream.bufferedReader().use { it.readText() }
-                }
-              } finally {
-                connection.disconnect()
-              }
+              val body = httpGet(candidate, connectTimeoutMs = 5000, readTimeoutMs = 15000)
+              if (body != null) return body
             } catch (t: IOException) {
               // Try again, then fall through to the next candidate.
-              log("warn", "Zipline CDP: fetch attempt failed for $candidate: ${t.javaClass.simpleName}: ${t.message}", null)
+              log("warn", "Zipline CDP: fetch attempt failed for $candidate: ${t::class.simpleName}: ${t.message}", null)
             }
           }
         }
@@ -589,7 +591,7 @@ internal class CdpDebugServer(
     private fun scheduleDrain() {
       if (drainScheduled.compareAndSet(false, true)) {
         scope.launch {
-          drainScheduled.set(false)
+          drainScheduled.store(false)
           try {
             jsEngine.cdpDrainTasks()
           } catch (t: Throwable) {
@@ -599,38 +601,45 @@ internal class CdpDebugServer(
       }
     }
 
-    fun addClient(output: java.io.OutputStream, socket: Socket) {
+    fun addClient(socket: DebugSocket) {
       // Single-debugger semantics: a new DevTools client replaces any previous
       // one. Sharing one agent across clients cross-talks responses and events
       // (each frontend sees the other's traffic), which breaks client-side
       // state like the breakpoint model.
-      if (clients.isNotEmpty()) {
-        for (old in clients) {
-          try {
-            WebSocketProtocol.sendClose(old)
-          } catch (_: IOException) {
+      val hadClients = clientsLock.withLock {
+        val had = clients.isNotEmpty()
+        if (had) {
+          for (old in clients) {
+            try {
+              WebSocketProtocol.sendClose(old)
+            } catch (_: IOException) {
+            }
+            old.closeQuietly()
           }
-          clientSockets.remove(old)?.closeQuietly()
+          clients.clear()
         }
-        clients.clear()
+        clients.add(socket)
+        had
+      }
+      if (hadClients) {
         // Fresh agent so the new client re-receives scriptParsed events when
         // it enables the Debugger domain (breakpoint state is preserved).
         jsEngine.cdpResetAgent()
       }
-      clients.add(output)
-      clientSockets[output] = socket
       // The Hermes CDP agent never reports its execution context, and without
       // one the DevTools console has nowhere to evaluate (input silently
       // vanishes). Announce the default context to the new client. Stock Chrome
       // DevTools discards it (Runtime domain not yet enabled) and gets a second
       // announcement after its Runtime.enable instead.
-      sendSafe(output, EXECUTION_CONTEXT_CREATED)
+      sendSafe(socket, EXECUTION_CONTEXT_CREATED)
     }
 
-    fun removeClient(output: java.io.OutputStream) {
-      clients.remove(output)
-      clientSockets.remove(output)
-      if (clients.isEmpty()) {
+    fun removeClient(socket: DebugSocket) {
+      val nowEmpty = clientsLock.withLock {
+        clients.remove(socket)
+        clients.isEmpty()
+      }
+      if (nowEmpty) {
         // The next client gets a fresh agent so it re-receives scriptParsed
         // events when it enables the Debugger domain (breakpoint state is
         // preserved across the reset).
@@ -638,23 +647,27 @@ internal class CdpDebugServer(
       }
     }
 
-    private fun sendSafe(output: java.io.OutputStream, json: String) {
+    private fun sendSafe(socket: DebugSocket, json: String) {
       try {
-        WebSocketProtocol.sendText(output, json)
+        WebSocketProtocol.sendText(socket, json)
       } catch (_: IOException) {
-        clients.remove(output)
+        clientsLock.withLock { clients.remove(socket) }
       }
     }
 
     fun close() {
-      for (client in clients) {
+      val snapshot = clientsLock.withLock {
+        val copy = clients.toList()
+        clients.clear()
+        copy
+      }
+      for (client in snapshot) {
         try {
           WebSocketProtocol.sendClose(client)
         } catch (_: IOException) {
         }
-        clientSockets.remove(client)?.closeQuietly()
+        client.closeQuietly()
       }
-      clients.clear()
     }
   }
 
@@ -685,10 +698,10 @@ internal class CdpDebugServer(
     }
   }
 
-  private fun kotlinx.serialization.json.JsonElement?.asObject(): JsonObject? =
+  private fun JsonElement?.asObject(): JsonObject? =
     this as? JsonObject
 
-  private fun kotlinx.serialization.json.JsonElement?.asString(): String? =
+  private fun JsonElement?.asString(): String? =
     (this as? JsonPrimitive)?.contentOrNull
 }
 

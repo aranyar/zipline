@@ -4,18 +4,18 @@ import app.cash.zipline.JsEngine
 import kotlinx.coroutines.CoroutineScope
 
 /**
- * Entry point for CDP debugging of a [JsEngine]. Debugging is enabled by setting the
- * `app.cash.zipline.cdp.port` system property to a TCP port (e.g. "9222") before the engine's
- * Zipline instance is created; [Zipline.create] then attaches each new engine to a shared
- * debug server on that port.
+ * Entry point for CDP debugging of a [JsEngine]. Debugging is enabled by [cdpDebugPort]
+ * (the `app.cash.zipline.cdp.port` system property on JNI platforms, the `ZIPLINE_CDP_PORT`
+ * environment variable on Kotlin/Native); [app.cash.zipline.Zipline.create] then attaches
+ * each new engine to a shared debug server on that port.
  */
 internal object CdpDebugSupport {
-  @Volatile
+  private val serverLock = DebugLock()
   private var server: CdpDebugServer? = null
 
   fun attachIfEnabled(jsEngine: JsEngine, scope: CoroutineScope) {
-    val port = System.getProperty("app.cash.zipline.cdp.port")?.toIntOrNull() ?: return
-    val server = server ?: synchronized(this) {
+    val port = cdpDebugPort() ?: return
+    val server = serverLock.withLock {
       server ?: try {
         CdpDebugServer(port).also {
           it.start()
@@ -29,13 +29,13 @@ internal object CdpDebugSupport {
           "Zipline CDP: cannot bind port $port (${t.message}); debugging disabled",
           null,
         )
-        return
+        null
       }
-    }
+    } ?: return
     server.attach(jsEngine, scope)
   }
 
   fun detach(jsEngine: JsEngine) {
-    server?.detach(jsEngine)
+    serverLock.withLock { server }?.detach(jsEngine)
   }
 }

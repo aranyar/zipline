@@ -74,6 +74,8 @@ set(HERMES_IOS_STATIC OFF CACHE BOOL "Build iOS as a merged static archive")
 set(GLUE_COMMON_SOURCES
   ${HERMES_SRC}/../hermes-core.cpp
   ${HERMES_SRC}/../ContextBase.cpp
+  ${HERMES_SRC}/../CdpSession.cpp
+  ${HERMES_SRC}/../CdpSession.h
   ${HERMES_SRC}/../hermes-ios/hermes-ios.cpp
   ${HERMES_SRC}/../InboundCallChannel.cpp
   ${HERMES_SRC}/../common/JsIntrinsics.cpp
@@ -214,7 +216,15 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
   # ---- iOS build (device + simulator) ----
   set(HERMES_IS_MOBILE_BUILD TRUE)
   set(HERMES_ENABLE_TEST_SUITE OFF)
-  set(HERMES_ENABLE_DEBUGGER OFF)
+  # The CDP debugger (incl. the CDP agent in API/hermes/cdp) is enabled for
+  # non-lean builds only: lean excludes the JS parser, which the debugger
+  # needs both for Runtime.evaluate and for parsing CDP JSON. CDP debugging
+  # therefore requires the full engine (-PhermesLean=false).
+  if(HERMESVM_LEAN)
+    set(HERMES_ENABLE_DEBUGGER OFF)
+  else()
+    set(HERMES_ENABLE_DEBUGGER ON)
+  endif()
   set(HERMES_ENABLE_TOOLS OFF)
   set(HERMES_ENABLE_INTL FALSE)
   set(HERMES_UNICODE_LITE TRUE)
@@ -253,6 +263,11 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     "${_hermes_subdir}/external/llvh/include")
   if(HERMESVM_LEAN)
     target_compile_definitions(zipline_ios_glue PRIVATE HERMESVM_LEAN=1)
+  endif()
+  if(HERMES_ENABLE_DEBUGGER)
+    # Glue sources include AsyncDebuggerAPI.h / CDP headers whose declarations
+    # change based on this define; keep it in sync with the Hermes build.
+    target_compile_definitions(zipline_ios_glue PRIVATE HERMES_ENABLE_DEBUGGER=1)
   endif()
 
   if(HERMES_IOS_STATIC)

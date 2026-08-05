@@ -109,6 +109,7 @@ class SourceMapUrlProbeTest {
   private class CdpClient(sessionId: String) : AutoCloseable {
     private val socket = Socket("127.0.0.1", PORT)
     private val out = socket.getOutputStream()
+    private val debugSocket = app.cash.zipline.internal.cdp.DebugSocket(socket)
     private val incoming = ArrayBlockingQueue<String>(100)
 
     init {
@@ -145,7 +146,7 @@ class SourceMapUrlProbeTest {
         """{"id":$id,"method":"$method",$extra}"""
       }
       synchronized(out) {
-        app.cash.zipline.internal.cdp.WebSocketProtocol.sendText(out, json)
+        app.cash.zipline.internal.cdp.WebSocketProtocol.sendText(debugSocket, json)
       }
     }
 

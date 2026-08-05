@@ -222,7 +222,15 @@ created (e.g. in `Application.onCreate`, guarded by `FLAG_DEBUGGABLE`):
 System.setProperty("app.cash.zipline.cdp.port", "9222")
 ```
 
-Every `Zipline.create(...)` then attaches its engine to a debug server on that port.
+**App side (iOS / Kotlin/Native).** Set the `ZIPLINE_CDP_PORT` environment variable before the
+first `Zipline` instance is created (e.g. in the Xcode scheme's environment variables, or via
+`setenv("ZIPLINE_CDP_PORT", "9222", 1)` early in app startup). iOS also requires the full,
+non-lean engine — build the library with `-PhermesLean=false` (the CDP debugger needs the JS
+parser for `Runtime.evaluate`, which lean builds exclude).
+
+Every `Zipline.create(...)` then attaches its engine to a debug server on that port. The server
+binds to loopback only; on iOS the simulator shares the host network, so Chrome on the host
+reaches it directly at `localhost:9222`.
 
 **Compiler side.** Breakpoints need the debug info that is only emitted when the Kotlin/JS output
 is compiled with a source map. To let Chrome DevTools fetch the generated `.js` sources and
@@ -242,7 +250,9 @@ Leave it unset for production builds (no debug info, smaller bytecode).
 **Connect.**
 
 ```console
+# Android:
 $ adb forward tcp:9222 tcp:9222
+# iOS simulator: nothing to forward; the simulator shares the host network.
 ```
 
 Then open `chrome://inspect`, add `localhost:9222` under "Configure...", and click "inspect" on
@@ -258,8 +268,11 @@ Notes and limitations:
 * When the Zipline instance is reloaded (hot-reload), its debug target disappears and a new one
   is published; re-attach the frontend to the new target (breakpoints by URL re-apply when set
   again).
-* Debugging over CDP also works on the host JVM (`:zipline:jvmTest` has a full end-to-end test,
-  `CdpDebugTest`).
+* Debugging over CDP also works on the host JVM and on Kotlin/Native (macOS/Linux/iOS). The
+  end-to-end test `CdpDebugTest` lives in `hostTest` and runs on all of them.
+* On physical iOS devices the debug server is only reachable via the device's own loopback, so
+  on-device debugging requires a tunnel (e.g. `pymobiledevice3 usbmux forward`); the simulator
+  needs none.
 
 ### Requirements
 

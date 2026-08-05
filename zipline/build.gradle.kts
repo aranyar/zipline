@@ -203,9 +203,14 @@ kotlin {
           val hermesHostLibDir = when {
             konanTarget.family == Family.LINUX -> "linux-x64"
             konanTarget.architecture == Architecture.ARM64 -> "macos-arm64"
-            else -> "macos-x64"
+            // Matches registerBuildHermesHostMacos("x86_64").
+            else -> "macos-x86_64"
           }
-          linkerOpts += "-L${rootDir}/zipline/build/hermes-jni/$hermesHostLibDir"
+          linkerOpts += listOf(
+            "-L${rootDir}/zipline/build/hermes-jni/$hermesHostLibDir",
+            // Let the loader find libhermesvm.dylib at test/executable runtime.
+            "-rpath", "${rootDir}/zipline/build/hermes-jni/$hermesHostLibDir",
+          )
         }
       }
 

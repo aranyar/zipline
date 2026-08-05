@@ -1,16 +1,11 @@
 package app.cash.zipline.internal.cdp
 
-import java.io.EOFException
-import java.io.IOException
-import java.io.InputStream
-import java.io.OutputStream
-import java.net.Socket
-import java.security.MessageDigest
+import okio.IOException
 
 /**
- * Minimal HTTP/1.1 + WebSocket (RFC 6455) plumbing for the CDP debug server. Implemented on raw
- * sockets so the engine library has no server dependencies. Only what Chrome DevTools needs:
- * HTTP GET requests, and text WebSocket messages of any size (with fragmentation).
+ * Minimal HTTP/1.1 + WebSocket (RFC 6455) plumbing for the CDP debug server, on top of the
+ * platform [DebugSocket] transport. Only what Chrome DevTools needs: HTTP GET requests, and
+ * text WebSocket messages of any size (with fragmentation).
  */
 internal object WebSocketProtocol {
   private const val GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -22,14 +17,14 @@ internal object WebSocketProtocol {
   )
 
   /** Reads an HTTP request (request line + headers, no body). Returns null on EOF. */
-  fun readHttpRequest(input: InputStream): HttpRequest? {
-    val requestLine = readHttpLine(input) ?: return null
+  fun readHttpRequest(socket: DebugSocket): HttpRequest? {
+    val requestLine = readHttpLine(socket) ?: return null
     if (requestLine.isEmpty()) return null
     val parts = requestLine.split(' ')
     if (parts.size < 2) throw IOException("Malformed request line: $requestLine")
     val headers = LinkedHashMap<String, String>()
     while (true) {
-      val line = readHttpLine(input) ?: throw EOFException("EOF in HTTP headers")
+      val line = readHttpLine(socket) ?: throw okio.EOFException("EOF in HTTP headers")
       if (line.isEmpty()) break
       val colon = line.indexOf(':')
       if (colon > 0) {
@@ -40,13 +35,13 @@ internal object WebSocketProtocol {
   }
 
   /** Reads a single CRLF-terminated line byte by byte (payload framing happens after headers). */
-  private fun readHttpLine(input: InputStream): String? {
+  private fun readHttpLine(socket: DebugSocket): String? {
     val line = StringBuilder()
     while (true) {
-      val b = input.read()
+      val b = socket.read()
       if (b == -1) {
         if (line.isEmpty()) return null
-        throw EOFException("EOF in HTTP line")
+        throw okio.EOFException("EOF in HTTP line")
       }
       if (b == '\r'.code) continue
       if (b == '\n'.code) return line.toString()
@@ -55,8 +50,8 @@ internal object WebSocketProtocol {
     }
   }
 
-  fun writeHttpResponse(output: OutputStream, status: Int, statusText: String, body: String) {
-    val bodyBytes = body.toByteArray(Charsets.UTF_8)
+  fun writeHttpResponse(socket: DebugSocket, status: Int, statusText: String, body: String) {
+    val bodyBytes = body.encodeToByteArray()
     val head = buildString {
       append("HTTP/1.1 ").append(status).append(' ').append(statusText).append("\r\n")
       append("Content-Type: application/json; charset=utf-8\r\n")
@@ -64,15 +59,11 @@ internal object WebSocketProtocol {
       append("Connection: close\r\n")
       append("\r\n")
     }
-    synchronized(output) {
-      output.write(head.toByteArray(Charsets.UTF_8))
-      output.write(bodyBytes)
-      output.flush()
-    }
+    socket.write(head.encodeToByteArray() + bodyBytes)
   }
 
-  fun writeWebSocketUpgrade(output: OutputStream, secWebSocketKey: String) {
-    val accept = base64(MessageDigest.getInstance("SHA-1").digest((secWebSocketKey + GUID).toByteArray(Charsets.UTF_8)))
+  fun writeWebSocketUpgrade(socket: DebugSocket, secWebSocketKey: String) {
+    val accept = base64(sha1((secWebSocketKey + GUID).encodeToByteArray()))
     val head = buildString {
       append("HTTP/1.1 101 Switching Protocols\r\n")
       append("Upgrade: websocket\r\n")
@@ -80,45 +71,48 @@ internal object WebSocketProtocol {
       append("Sec-WebSocket-Accept: ").append(accept).append("\r\n")
       append("\r\n")
     }
-    synchronized(output) {
-      output.write(head.toByteArray(Charsets.UTF_8))
-      output.flush()
-    }
+    socket.write(head.encodeToByteArray())
   }
 
   /** Sends an unfragmented text frame. Server frames are never masked. */
-  fun sendText(output: OutputStream, text: String) {
-    sendFrame(output, OPCODE_TEXT, text.toByteArray(Charsets.UTF_8))
+  fun sendText(socket: DebugSocket, text: String) {
+    sendFrame(socket, OPCODE_TEXT, text.encodeToByteArray())
   }
 
-  fun sendPong(output: OutputStream, payload: ByteArray) {
-    sendFrame(output, OPCODE_PONG, payload)
+  fun sendPong(socket: DebugSocket, payload: ByteArray) {
+    sendFrame(socket, OPCODE_PONG, payload)
   }
 
-  fun sendClose(output: OutputStream) {
-    sendFrame(output, OPCODE_CLOSE, ByteArray(0))
+  fun sendClose(socket: DebugSocket) {
+    sendFrame(socket, OPCODE_CLOSE, ByteArray(0))
   }
 
-  private fun sendFrame(output: OutputStream, opcode: Int, payload: ByteArray) {
-    synchronized(output) {
-      output.write(0x80 or opcode)
-      when {
-        payload.size < 126 -> output.write(payload.size)
-        payload.size <= 0xFFFF -> {
-          output.write(126)
-          output.write((payload.size ushr 8) and 0xFF)
-          output.write(payload.size and 0xFF)
-        }
-        else -> {
-          output.write(127)
-          for (shift in 56 downTo 0 step 8) {
-            output.write(((payload.size.toLong() ushr shift) and 0xFF).toInt())
-          }
+  private fun sendFrame(socket: DebugSocket, opcode: Int, payload: ByteArray) {
+    val headerSize = when {
+      payload.size < 126 -> 2
+      payload.size <= 0xFFFF -> 4
+      else -> 10
+    }
+    // One write call per frame: DebugSocket.write serializes concurrent
+    // writers, so frames from different threads never interleave.
+    val frame = ByteArray(headerSize + payload.size)
+    frame[0] = (0x80 or opcode).toByte()
+    when {
+      payload.size < 126 -> frame[1] = payload.size.toByte()
+      payload.size <= 0xFFFF -> {
+        frame[1] = 126
+        frame[2] = (payload.size ushr 8).toByte()
+        frame[3] = payload.size.toByte()
+      }
+      else -> {
+        frame[1] = 127
+        for (i in 0 until 8) {
+          frame[2 + i] = ((payload.size.toLong() ushr (56 - i * 8)) and 0xFF).toByte()
         }
       }
-      output.write(payload)
-      output.flush()
     }
+    payload.copyInto(frame, headerSize)
+    socket.write(frame)
   }
 
   private const val OPCODE_CONTINUATION = 0x0
@@ -131,30 +125,30 @@ internal object WebSocketProtocol {
    * Reads WebSocket frames until the connection closes, delivering complete text messages to
    * [onText]. Returns when the peer closes or on IO error.
    */
-  fun readFrames(input: InputStream, output: OutputStream, onText: (String) -> Unit) {
+  fun readFrames(socket: DebugSocket, onText: (String) -> Unit) {
     // Bytes are accumulated across fragments and decoded only at FIN: a
     // multi-byte UTF-8 character may be split across fragment boundaries.
-    val message = java.io.ByteArrayOutputStream()
+    var message = ByteArray(0)
     while (true) {
-      val b0 = input.read()
+      val b0 = socket.read()
       if (b0 == -1) return
-      val b1 = input.read()
+      val b1 = socket.read()
       if (b1 == -1) return
       val fin = (b0 and 0x80) != 0
       val opcode = b0 and 0x0F
       val masked = (b1 and 0x80) != 0
       var length = (b1 and 0x7F).toLong()
       if (length == 126L) {
-        length = (readByteOrEof(input).toLong() shl 8) or readByteOrEof(input).toLong()
+        length = (readByteOrEof(socket).toLong() shl 8) or readByteOrEof(socket).toLong()
       } else if (length == 127L) {
         length = 0
         for (i in 0 until 8) {
-          length = (length shl 8) or readByteOrEof(input).toLong()
+          length = (length shl 8) or readByteOrEof(socket).toLong()
         }
       }
       if (length > 64L * 1024L * 1024L) throw IOException("WebSocket frame too large")
-      val maskKey = if (masked) readNBytes(input, 4) else null
-      var payload = readNBytes(input, length.toInt())
+      val maskKey = if (masked) readNBytes(socket, 4) else null
+      val payload = readNBytes(socket, length.toInt())
       if (maskKey != null) {
         for (i in payload.indices) {
           payload[i] = (payload[i].toInt() xor maskKey[i % 4].toInt()).toByte()
@@ -162,18 +156,17 @@ internal object WebSocketProtocol {
       }
       when (opcode) {
         OPCODE_TEXT -> {
-          message.reset()
-          message.write(payload)
-          if (fin) onText(String(message.toByteArray(), Charsets.UTF_8))
+          message = payload
+          if (fin) onText(message.decodeToString())
         }
         OPCODE_CONTINUATION -> {
-          message.write(payload)
-          if (fin) onText(String(message.toByteArray(), Charsets.UTF_8))
+          message += payload
+          if (fin) onText(message.decodeToString())
         }
-        OPCODE_PING -> sendPong(output, payload)
+        OPCODE_PING -> sendPong(socket, payload)
         OPCODE_PONG -> Unit
         OPCODE_CLOSE -> {
-          sendClose(output)
+          sendClose(socket)
           return
         }
         else -> throw IOException("Unsupported WebSocket opcode: $opcode")
@@ -181,18 +174,18 @@ internal object WebSocketProtocol {
     }
   }
 
-  private fun readByteOrEof(input: InputStream): Int {
-    val b = input.read()
-    if (b == -1) throw EOFException("EOF in WebSocket frame")
+  private fun readByteOrEof(socket: DebugSocket): Int {
+    val b = socket.read()
+    if (b == -1) throw okio.EOFException("EOF in WebSocket frame")
     return b
   }
 
-  private fun readNBytes(input: InputStream, n: Int): ByteArray {
+  private fun readNBytes(socket: DebugSocket, n: Int): ByteArray {
     val result = ByteArray(n)
     var offset = 0
     while (offset < n) {
-      val read = input.read(result, offset, n - offset)
-      if (read == -1) throw EOFException("EOF in WebSocket frame payload")
+      val read = socket.readInto(result, offset, n - offset)
+      if (read == -1) throw okio.EOFException("EOF in WebSocket frame payload")
       offset += read
     }
     return result
@@ -200,7 +193,7 @@ internal object WebSocketProtocol {
 
   private const val BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
-  /** java.util.Base64 requires Android API 26+; this encoder keeps us minSdk 21 compatible. */
+  /** Hand-rolled so the handshake works without java.util.Base64 (minSdk 21, Kotlin/Native). */
   internal fun base64(data: ByteArray): String {
     val out = StringBuilder((data.size + 2) / 3 * 4)
     var i = 0
@@ -215,13 +208,5 @@ internal object WebSocketProtocol {
       i += 3
     }
     return out.toString()
-  }
-}
-
-/** Closes quietly. */
-internal fun Socket.closeQuietly() {
-  try {
-    close()
-  } catch (_: IOException) {
   }
 }

@@ -1,48 +1,60 @@
+@file:OptIn(DelicateCoroutinesApi::class, ExperimentalEncodingApi::class, ExperimentalAtomicApi::class)
+
 package app.cash.zipline
 
+import app.cash.zipline.internal.cdp.DebugServerSocket
+import app.cash.zipline.internal.cdp.DebugSocket
 import app.cash.zipline.internal.cdp.WebSocketProtocol
-import java.io.EOFException
-import java.io.InputStream
-import java.net.HttpURLConnection
-import java.net.Socket
-import java.net.URL
-import java.util.concurrent.ArrayBlockingQueue
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
+import app.cash.zipline.internal.cdp.closeQuietly
+import app.cash.zipline.internal.cdp.connectDebugSocket
+import app.cash.zipline.internal.cdp.httpGet
+import app.cash.zipline.internal.cdp.startDebugThread
+import kotlin.concurrent.atomics.AtomicBoolean
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.io.encoding.Base64
+import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
-import kotlinx.coroutines.asCoroutineDispatcher
+import kotlin.time.TimeSource
+import kotlinx.coroutines.CloseableCoroutineDispatcher
+import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.newSingleThreadContext
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import okio.EOFException
+import okio.IOException
 
 /**
- * End-to-end test of CDP (Chrome DevTools Protocol) debugging: starts the debug server via the
- * `app.cash.zipline.cdp.port` system property, connects over HTTP + WebSocket like Chrome
- * DevTools would, and drives the Debugger/Runtime domains.
+ * End-to-end test of CDP (Chrome DevTools Protocol) debugging: starts the debug server via
+ * the CDP port config (system property on JNI, ZIPLINE_CDP_PORT env var on Kotlin/Native),
+ * connects over HTTP + WebSocket like Chrome DevTools would, and drives the Debugger/Runtime
+ * domains.
  *
  * The debugged script is precompiled to Hermes bytecode (with debug info and an embedded source
- * map) and embedded below, because Android's lean engine cannot compile JS at runtime.
+ * map) and embedded below, because lean engine builds cannot compile JS at runtime.
  */
 class CdpDebugTest {
-  private val executor = Executors.newSingleThreadExecutor()
-  private val dispatcher = executor.asCoroutineDispatcher()
+  private val dispatcher = newSingleThreadContext("CdpDebugTest")
   private var zipline: Zipline? = null
 
   @BeforeTest
   fun setUp() {
-    System.setProperty("app.cash.zipline.cdp.port", PORT.toString())
+    setCdpPortEnv(PORT)
   }
 
   @AfterTest
   fun tearDown() {
-    System.clearProperty("app.cash.zipline.cdp.port")
+    setCdpPortEnv(null)
     zipline?.close()
     zipline = null
+    (dispatcher as? CloseableCoroutineDispatcher)?.close()
   }
 
   @Test
@@ -187,39 +199,43 @@ class CdpDebugTest {
 
   /** A one-shot HTTP server answering GETs from [paths] (path -> body). */
   private class MiniHttpServer(port: Int, private val paths: Map<String, String>) {
-    private val serverSocket = java.net.ServerSocket(port)
-    @Volatile private var running = true
+    private val serverSocket = DebugServerSocket(port)
+    private val running = AtomicBoolean(true)
 
     fun start() {
-      val thread = Thread {
-        while (running) {
+      startDebugThread("CdpTest-httpd") {
+        while (running.load()) {
+          val client = try {
+            serverSocket.accept()
+          } catch (_: IOException) {
+            break
+          }
           try {
-            val client = serverSocket.accept()
-            val input = client.getInputStream().bufferedReader()
-            val requestLine = input.readLine() ?: ""
-            while (input.readLine()?.isNotEmpty() == true) Unit
-            val path = requestLine.split(' ').getOrNull(1)?.substringBefore('?') ?: "/"
+            val request = WebSocketProtocol.readHttpRequest(client)
+            val path = request?.path?.substringBefore('?') ?: "/"
             val body = paths[path]
             if (body == null) {
-              client.getOutputStream().write("HTTP/1.1 404 NF\r\nContent-Length: 0\r\n\r\n".toByteArray())
-              client.close()
-              continue
+              client.write("HTTP/1.1 404 NF\r\nContent-Length: 0\r\n\r\n".encodeToByteArray())
+            } else {
+              val bodyBytes = body.encodeToByteArray()
+              client.write(
+                ("HTTP/1.1 200 OK\r\nContent-Length: ${bodyBytes.size}\r\n\r\n".encodeToByteArray() + bodyBytes),
+              )
             }
-            val response = "HTTP/1.1 200 OK\r\nContent-Length: ${body.toByteArray().size}\r\n\r\n$body"
-            client.getOutputStream().write(response.toByteArray())
-            client.close()
-          } catch (_: Exception) {
-            break
+          } catch (_: IOException) {
+          } finally {
+            client.closeQuietly()
           }
         }
       }
-      thread.isDaemon = true
-      thread.start()
     }
 
     fun stop() {
-      running = false
-      serverSocket.close()
+      running.store(false)
+      try {
+        serverSocket.close()
+      } catch (_: Throwable) {
+      }
     }
   }
 
@@ -233,23 +249,17 @@ class CdpDebugTest {
   }
 
   private fun discoverSessionId(): String {
-    val connection = URL("http://localhost:$PORT/json/list").openConnection() as HttpURLConnection
-    try {
-      val body = connection.inputStream.bufferedReader().readText()
-      val match = Regex(""""id":"(\d+)"""").find(body)
-      assertNotNull(match, "no debug target in /json/list: $body")
-      return match.groupValues[1]
-    } finally {
-      connection.disconnect()
-    }
+    val body = httpGet("http://localhost:$PORT/json/list", 5000, 5000)
+    assertNotNull(body, "no response from /json/list")
+    val match = Regex(""""id":"(\d+)"""").find(body)
+    assertNotNull(match, "no debug target in /json/list: $body")
+    return match.groupValues[1]
   }
 
   /** A minimal CDP WebSocket client: unmasked client frames (accepted by our server). */
   private class CdpClient(sessionId: String) : AutoCloseable {
-    private val socket = Socket("localhost", PORT)
-    private val input = socket.getInputStream()
-    private val output = socket.getOutputStream()
-    private val messages = ArrayBlockingQueue<String>(256)
+    private val socket = connectDebugSocket("127.0.0.1", PORT)
+    private val messages = Channel<String>(Channel.UNLIMITED)
 
     init {
       val request = buildString {
@@ -260,23 +270,20 @@ class CdpDebugTest {
         append("Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n")
         append("\r\n")
       }
-      output.write(request.toByteArray(Charsets.US_ASCII))
-      output.flush()
+      socket.write(request.encodeToByteArray())
       val statusLine = readHttpLine()
       assertTrue(statusLine.contains("101"), "WebSocket upgrade failed: $statusLine")
       while (readHttpLine().isNotEmpty()) Unit // Skip headers.
 
-      val reader = Thread {
+      startDebugThread("CdpTest-reader") {
         try {
           while (true) {
-            messages.put(readFrame(input))
+            messages.trySend(readFrame(socket))
           }
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
           // Closed.
         }
       }
-      reader.isDaemon = true
-      reader.start()
     }
 
     fun send(id: Int, method: String, extra: String = "") {
@@ -285,35 +292,38 @@ class CdpDebugTest {
         if (extra.isNotEmpty()) append(',').append(extra)
         append('}')
       }
-      WebSocketProtocol.sendText(output, json)
+      WebSocketProtocol.sendText(socket, json)
     }
 
-    fun awaitResponse(id: Int): String = awaitMessage(""""id":$id""")
+    suspend fun awaitResponse(id: Int): String = awaitMessage(""""id":$id""")
 
-    fun awaitEvent(method: String): String = awaitMessage(""""method":"$method"""")
+    suspend fun awaitEvent(method: String): String = awaitMessage(""""method":"$method"""")
 
-    fun awaitEventContaining(marker: String): String = awaitMessage(marker)
+    suspend fun awaitEventContaining(marker: String): String = awaitMessage(marker)
 
     private val stash = mutableListOf<String>()
 
-    private fun awaitMessage(marker: String): String {
+    private suspend fun awaitMessage(marker: String): String {
       stash.indexOfFirst { it.contains(marker) }.let { index ->
         if (index != -1) return stash.removeAt(index)
       }
-      val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
-      while (true) {
-        val remaining = deadline - System.nanoTime()
-        val message = messages.poll(remaining, TimeUnit.NANOSECONDS)
-        assertNotNull(message, "timed out waiting for $marker")
+      val deadline = TimeSource.Monotonic.markNow() + kotlin.time.Duration.parse("30s")
+      while (deadline.hasNotPassedNow()) {
+        val message = messages.tryReceive().getOrNull()
+        if (message == null) {
+          delay(5)
+          continue
+        }
         if (message.contains(marker)) return message
         stash.add(message)
       }
+      throw AssertionError("timed out waiting for $marker")
     }
 
     private fun readHttpLine(): String {
       val line = StringBuilder()
       while (true) {
-        val b = input.read()
+        val b = socket.read()
         if (b == -1) throw EOFException()
         if (b == '\n'.code) return line.toString().trimEnd('\r')
         line.append(b.toChar())
@@ -321,7 +331,7 @@ class CdpDebugTest {
     }
 
     override fun close() {
-      socket.close()
+      socket.closeQuietly()
     }
   }
 
@@ -343,7 +353,7 @@ class CdpDebugTest {
      * (Produced by JsEngine.compile on the JVM; regenerate if the bytecode format
      * version changes.)
      */
-    val testScriptBytecode: ByteArray = java.util.Base64.getDecoder().decode(
+    val testScriptBytecode: ByteArray = Base64.decode(
       "xh+8A8EDGR9iAAAA7ZXVKt96I1Xh+uQG9lBsQ3SUO+LoAQAAAAAAAAIAAAACAAAAAQAAAAIAAAAA" +
         "AAAACwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWAEAAAAA" +
         "AAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAACAsAQAAAAAAAAAAACABAAAAAQAAgKudwlUAAAAGDAAA" +
@@ -356,7 +366,7 @@ class CdpDebugTest {
     )
 
     /** Same script as [testScriptBytecode] but with [SERVED_SCRIPT_URL] baked in. */
-    val servedScriptBytecode: ByteArray = java.util.Base64.getDecoder().decode(
+    val servedScriptBytecode: ByteArray = Base64.decode(
       "xh+8A8EDGR9iAAAA7ZXVKt96I1Xh+uQG9lBsQ3SUO+LpAQAAAAAAAAIAAAACAAAAAQAAAAIAAAAA" +
         "AAAACwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWAEAAAAA" +
         "AAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAACAsAQAAAAAAAAAAACABAAAAAQAAgKudwlUAAAAGDAAA" +
@@ -369,26 +379,26 @@ class CdpDebugTest {
     )
 
     /** Reads one server-to-client (unmasked) WebSocket text frame. */
-    fun readFrame(input: InputStream): String {
-      val b0 = input.read()
+    fun readFrame(socket: DebugSocket): String {
+      val b0 = socket.read()
       if (b0 == -1) throw EOFException()
-      val b1 = input.read()
+      val b1 = socket.read()
       if (b1 == -1) throw EOFException()
       var length = (b1 and 0x7F).toLong()
       if (length == 126L) {
-        length = (input.read().toLong() shl 8) or input.read().toLong()
+        length = (socket.read().toLong() shl 8) or socket.read().toLong()
       } else if (length == 127L) {
         length = 0
-        for (i in 0 until 8) length = (length shl 8) or input.read().toLong()
+        for (i in 0 until 8) length = (length shl 8) or socket.read().toLong()
       }
       val payload = ByteArray(length.toInt())
       var offset = 0
       while (offset < payload.size) {
-        val read = input.read(payload, offset, payload.size - offset)
+        val read = socket.readInto(payload, offset, payload.size - offset)
         if (read == -1) throw EOFException()
         offset += read
       }
-      return String(payload, Charsets.UTF_8)
+      return payload.decodeToString()
     }
   }
 }
