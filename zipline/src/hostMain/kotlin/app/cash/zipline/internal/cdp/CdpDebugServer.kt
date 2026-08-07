@@ -44,6 +44,36 @@ internal class CdpDebugServer(
   private val sessions = mutableListOf<DebugSession>()
   private var serverSocket: DebugServerSocket? = null
 
+  /**
+   * Work queue for blocking fetches to the dev server, serviced by a small
+   * fixed pool. DevTools fires hundreds of resource requests (every .js,
+   * .js.map and .kt source) at once; spawning a thread per request is fine
+   * on the JVM but Kotlin/Native workers are too heavyweight for that.
+   */
+  private val fetchTasks = kotlinx.coroutines.channels.Channel<() -> Unit>(
+    kotlinx.coroutines.channels.Channel.UNLIMITED,
+  )
+
+  init {
+    repeat(FETCH_POOL_SIZE) {
+      startDebugThread("ZiplineCdp-fetch-$it") {
+        kotlinx.coroutines.runBlocking {
+          for (task in fetchTasks) {
+            try {
+              task()
+            } catch (t: Throwable) {
+              log("warn", "Zipline CDP: fetch task failed: ${t.message}", t)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private fun submitFetchTask(task: () -> Unit) {
+    fetchTasks.trySend(task)
+  }
+
   fun start() {
     val socket = DebugServerSocket(port)
     serverSocket = socket
@@ -357,8 +387,14 @@ internal class CdpDebugServer(
 
     private fun serveScriptSource(requestId: String, url: String) {
       // Fetch off the WebSocket reader thread; reply directly to the clients.
-      startDebugThread("ZiplineCdp-source") {
+      submitFetchTask {
+        val mark = kotlin.time.TimeSource.Monotonic.markNow()
         val source = fetchScriptSource(url)
+        log(
+          "info",
+          "Zipline CDP: getScriptSource $url -> ${source?.length ?: "failed"} in ${mark.elapsedNow()}",
+          null,
+        )
         val response = if (source != null) {
           buildJsonObject {
             put("id", requestId.toLongOrNull() ?: 0L)
@@ -385,8 +421,14 @@ internal class CdpDebugServer(
       endLine: Int,
       endCol: Int,
     ) {
-      startDebugThread("ZiplineCdp-possiblebp") {
+      submitFetchTask {
+        val mark = kotlin.time.TimeSource.Monotonic.markNow()
         val locations = possibleBreakpoints(scriptId, startLine, startCol, endLine, endCol)
+        log(
+          "info",
+          "Zipline CDP: getPossibleBreakpoints scriptId=$scriptId -> ${locations.size} locations in ${mark.elapsedNow()}",
+          null,
+        )
         sendToClients(buildJsonObject {
           put("id", requestId.toLongOrNull() ?: 0L)
           putJsonObject("result") {
@@ -483,8 +525,14 @@ internal class CdpDebugServer(
     }
 
     private fun serveNetworkResource(requestId: String, url: String) {
-      startDebugThread("ZiplineCdp-resource") {
+      submitFetchTask {
+        val mark = kotlin.time.TimeSource.Monotonic.markNow()
         val content = fetchScriptSource(url)
+        log(
+          "info",
+          "Zipline CDP: loadNetworkResource $url -> ${content?.length ?: "failed"} in ${mark.elapsedNow()}",
+          null,
+        )
         val response = buildJsonObject {
           put("id", requestId.toLongOrNull() ?: 0L)
           putJsonObject("result") {
@@ -674,6 +722,9 @@ internal class CdpDebugServer(
   companion object {
     /** Cap CDP traffic logging so big payloads (script sources) don't flood logcat. */
     private const val MAX_LOG_CHARS = 400
+
+    /** Threads servicing dev-server fetches; matches the fetchPermits bound. */
+    private const val FETCH_POOL_SIZE = 4
 
     /** Matches the "id" of an agent response, for response post-processing. */
     private val RUNTIME_RESPONSE_ID = Regex(""""id":(\d+)""")
