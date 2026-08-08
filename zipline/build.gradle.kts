@@ -51,6 +51,12 @@ dependencies {
   add(NATIVE_COMPILER_PLUGIN_CLASSPATH_CONFIGURATION_NAME, projects.ziplineKotlinPlugin)
 }
 
+// Lean (no JIT/parser, ~1MB smaller per ABI) is the default. Pass
+// -PhermesProd=false for the full engine: required for CDP debugging
+// (Runtime.evaluate / evaluateOnCallFrame compile JS at runtime). Also gates
+// the CDP test sources and their Ktor client dependencies.
+val hermesProd = providers.gradleProperty("hermesProd").orNull?.toBooleanStrictOrNull() ?: true
+
 kotlin {
   androidTarget {
     // Substitute release AAR with debug AAR when the
@@ -109,16 +115,45 @@ kotlin {
     }
     val hostTest by creating {
       dependsOn(commonTest)
+      if (hermesProd) {
+        // CDP tests need the full (debuggable) engine; skip their sources in
+        // prod builds so the Ktor client deps aren't needed either.
+        kotlin {
+          srcDir("kotlin")
+          exclude("app/cash/zipline/CdpDebugTest.kt")
+          exclude("app/cash/zipline/CdpTestEnv.kt")
+          exclude("app/cash/zipline/internal/cdp/**")
+        }
+      } else {
+        dependencies {
+          // CDP test client (Ktor client WebSockets work on JVM and Native).
+          implementation(libs.ktor.client.core)
+          implementation(libs.ktor.client.cio)
+          implementation(libs.ktor.client.websockets)
+        }
+      }
     }
 
     val jniMain by creating {
       dependsOn(hostMain)
       dependencies {
         api(libs.androidx.annotation)
+        // The Ktor CIO debug server runs on JNI platforms; Kotlin/Native keeps
+        // the raw-socket server (Ktor server is JVM-only). Debug-time only.
+        implementation(libs.ktor.server.core)
+        implementation(libs.ktor.server.cio)
+        implementation(libs.ktor.server.websockets)
       }
     }
     val jniTest by creating {
       dependsOn(hostTest)
+      if (hermesProd) {
+        kotlin {
+          srcDir("kotlin")
+          exclude("app/cash/zipline/CdpTestEnvJni.kt")
+          exclude("app/cash/zipline/internal/cdp/**")
+        }
+      }
     }
 
     val androidMain by getting {
@@ -141,6 +176,12 @@ kotlin {
     val jvmTest by getting {
       dependsOn(jniTest)
       resources.srcDir(copyTestingJs)
+      if (hermesProd) {
+        kotlin {
+          srcDir("kotlin")
+          exclude("app/cash/zipline/SourceMapUrlProbeTest.kt")
+        }
+      }
       dependencies {
         implementation(libs.junit)
         implementation(projects.ziplineTesting)
@@ -149,9 +190,22 @@ kotlin {
 
     val nativeMain by getting {
       dependsOn(hostMain)
+      dependencies {
+        // Ktor server is JVM-only; on Kotlin/Native the debug server uses
+        // ktor-network sockets + the ktor-websockets frame codec.
+        implementation(libs.ktor.network)
+        implementation(libs.ktor.websockets)
+      }
     }
     val nativeTest by getting {
       dependsOn(hostTest)
+      if (hermesProd) {
+        kotlin {
+          srcDir("kotlin")
+          exclude("app/cash/zipline/CdpTestEnvNative.kt")
+          exclude("app/cash/zipline/internal/cdp/**")
+        }
+      }
     }
 
     targets.withType<KotlinNativeTarget> {
@@ -263,11 +317,6 @@ buildConfig {
 // JsEngine native libraries are built by Gradle-driven CMake (see the
 // buildHermes* tasks below for host/iOS and the android externalNativeBuild
 // block for Android).
-
-// Lean (no JIT/parser, ~1MB smaller per ABI) is the default. Pass
-// -PhermesLean=false for the full engine: required for CDP debugging
-// (Runtime.evaluate / evaluateOnCallFrame compile JS at runtime).
-val hermesLean = providers.gradleProperty("hermesLean").orNull?.toBooleanStrictOrNull() ?: true
 
 fun jsEngineVersion(): String {
   // The vendored JsEngine source is pinned by its git revision (see
@@ -560,7 +609,7 @@ fun registerBuildHermesStaticIos(
     inputs.files(hermesGlueInputFiles)
     inputs.files(hermesCmakeInputFiles)
     inputs.file(file("native/hermes-ios.exports"))
-    inputs.property("hermesLean", hermesLean)
+    inputs.property("hermesProd", hermesProd)
     outputs.file(outputFile)
     val cmakeBin = System.getenv("CMAKE_BIN") ?: "cmake"
     val jobs = Runtime.getRuntime().availableProcessors().toString()
@@ -582,7 +631,7 @@ fun registerBuildHermesStaticIos(
         -DCMAKE_OSX_SYSROOT="${'$'}SDK_PATH" \
         -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
         -DCMAKE_OSX_ARCHITECTURES='$architectures' \
-        -DHERMESVM_LEAN=${if (hermesLean) "ON" else "OFF"} \
+        -DHERMESVM_LEAN=${if (hermesProd) "ON" else "OFF"} \
         -DHERMES_IOS_STATIC=ON \
         -DHERMES_SRC='${jsEngineRoot.absolutePath}' \
         -DIMPORT_HOST_COMPILERS='${hermesImportCompilers.absolutePath}'
@@ -691,7 +740,7 @@ android {
     buildConfigField(
       "String",
       "hermesLibraryName",
-      "\"${if (hermesLean) "hermesvmlean" else "hermesvm"}\"",
+      "\"${if (hermesProd) "hermesvmlean" else "hermesvm"}\"",
     )
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -707,9 +756,9 @@ android {
     externalNativeBuild {
       cmake {
         // Build only the engine variant we package (full by default via
-        // -PhermesLean=false, lean otherwise); the other variant's .so would
+        // -PhermesProd=false, lean otherwise); the other variant's .so would
         // otherwise be built and packaged too.
-        targets(if (hermesLean) "hermesvmlean" else "hermesvm")
+        targets(if (hermesProd) "hermesvmlean" else "hermesvm")
         arguments(
           "-DANDROID_TOOLCHAIN=clang",
           "-DANDROID_STL=c++_shared",
@@ -720,7 +769,7 @@ android {
           // the NDK toolchain's sysroot include dir already has jni.h).
           "-DJAVA_HOME=${javaHome ?: ""}",
           // Pass explicitly: the CMake cache from older builds sticks otherwise.
-          "-DHERMESVM_LEAN=${if (hermesLean) "TRUE" else "FALSE"}",
+          "-DHERMESVM_LEAN=${if (hermesProd) "TRUE" else "FALSE"}",
         )
         cFlags("-fstrict-aliasing", "-DCONFIG_VERSION=\\\"${jsEngineVersion()}\\\"")
         cppFlags("-fstrict-aliasing", "-DCONFIG_VERSION=\\\"${jsEngineVersion()}\\\"")

@@ -1,43 +1,10 @@
 package app.cash.zipline.internal.cdp
 
 /**
- * Platform transport for the CDP debug server: blocking sockets, threads,
- * locks, and HTTP fetches. Actuals exist for JNI (java.net/Thread) and
- * Kotlin/Native (POSIX sockets/pthreads) platforms.
- *
- * All socket methods throw [okio.IOException] on IO errors.
+ * Platform plumbing for the CDP debug server: threads, locks, HTTP fetches
+ * and port configuration. Actuals exist for JNI (java.net/Thread) and
+ * Kotlin/Native (POSIX/coroutines) platforms.
  */
-
-/** Blocking server socket. Accepts loopback connections only. */
-internal expect class DebugServerSocket(port: Int) {
-  /** Blocks until a client connects. Throws [okio.IOException] when closed. */
-  fun accept(): DebugSocket
-
-  fun close()
-}
-
-/**
- * Blocking connected socket. [write] must be safe for concurrent use from
- * multiple threads (implementations serialize writes internally); each call
- * delivers [bytes] atomically with respect to other writers.
- */
-internal expect class DebugSocket {
-  fun setTcpNoDelay()
-
-  /** Reads a single byte, or -1 on EOF. */
-  fun read(): Int
-
-  /** Reads up to [length] bytes into [buffer] at [offset]; returns the count, or -1 on EOF. */
-  fun readInto(buffer: ByteArray, offset: Int, length: Int): Int
-
-  /** Writes all of [bytes]. */
-  fun write(bytes: ByteArray)
-
-  fun close()
-}
-
-/** Connects a blocking client socket to [host]:[port]. */
-internal expect fun connectDebugSocket(host: String, port: Int): DebugSocket
 
 /** A mutual exclusion lock for non-coroutine code. */
 internal expect class DebugLock() {
@@ -63,16 +30,21 @@ internal expect fun httpGet(url: String, connectTimeoutMs: Int, readTimeoutMs: I
 internal expect fun cdpDebugPort(): Int?
 
 /**
+ * Starts the platform CDP debug server for [core]: HTTP target discovery
+ * (`/json`, `/json/list`, `/json/version`) and the `/devtools/page/<id>`
+ * WebSocket. Ktor CIO on JNI platforms, raw sockets on Kotlin/Native.
+ * Throws when the port cannot be bound.
+ */
+internal expect fun startCdpServer(port: Int, core: CdpDebugServer): CdpServerHandle
+
+internal interface CdpServerHandle {
+  /** Starts accepting connections (returns immediately). */
+  fun start()
+}
+
+/**
  * Extra URL variants to try when fetching script sources from the dev server,
  * after the loopback-literal variant and the URL itself (e.g. the Android
  * emulator NAT alias 10.0.2.2 for localhost URLs).
  */
 internal expect fun extraFetchCandidates(url: String): List<String>
-
-/** Closes quietly. */
-internal fun DebugSocket.closeQuietly() {
-  try {
-    close()
-  } catch (_: okio.IOException) {
-  }
-}

@@ -18,7 +18,7 @@ internal object CdpDebugSupport {
     val server = serverLock.withLock {
       server ?: try {
         CdpDebugServer(port).also {
-          it.start()
+          startCdpServer(port, it).start()
           server = it
         }
       } catch (t: Throwable) {

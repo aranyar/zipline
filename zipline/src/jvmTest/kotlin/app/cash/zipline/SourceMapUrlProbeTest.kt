@@ -1,5 +1,7 @@
 package app.cash.zipline
 
+import app.cash.zipline.internal.cdp.CdpTestClient
+
 import java.io.EOFException
 import java.io.InputStream
 import java.net.HttpURLConnection
@@ -38,7 +40,7 @@ class SourceMapUrlProbeTest {
     this@SourceMapUrlProbeTest.zipline = zipline
 
     val sessionId = discoverSessionId()
-    CdpClient(sessionId).use { cdp ->
+    CdpTestClient.connect(PORT, sessionId).use { cdp ->
       cdp.send(1, "Runtime.enable")
       cdp.send(2, "Debugger.enable")
       cdp.awaitResponse(2)
@@ -103,113 +105,6 @@ class SourceMapUrlProbeTest {
         if (System.currentTimeMillis() > deadline) throw e
         Thread.sleep(200)
       }
-    }
-  }
-
-  private class CdpClient(sessionId: String) : AutoCloseable {
-    private val socket = Socket("127.0.0.1", PORT)
-    private val out = socket.getOutputStream()
-    private val debugSocket = app.cash.zipline.internal.cdp.DebugSocket(socket)
-    private val incoming = ArrayBlockingQueue<String>(100)
-
-    init {
-      val key = java.util.Base64.getEncoder().encodeToString(ByteArray(16) { 1 })
-      val request = buildString {
-        append("GET /devtools/page/$sessionId HTTP/1.1\r\n")
-        append("Host: 127.0.0.1:$PORT\r\n")
-        append("Upgrade: websocket\r\n")
-        append("Connection: Upgrade\r\n")
-        append("Sec-WebSocket-Key: $key\r\n")
-        append("Sec-WebSocket-Version: 13\r\n")
-        append("\r\n")
-      }
-      out.write(request.toByteArray())
-      out.flush()
-      val headers = readHttpHeaders(socket.getInputStream())
-      check(headers.first().contains("101")) { "WebSocket upgrade failed: ${headers.first()}" }
-
-      Thread {
-        try {
-          while (true) {
-            incoming.put(readFrame(socket.getInputStream()))
-          }
-        } catch (e: EOFException) {
-        } catch (e: Exception) {
-        }
-      }.apply { isDaemon = true }.start()
-    }
-
-    fun send(id: Int, method: String, extra: String = "") {
-      val json = if (extra.isEmpty()) {
-        """{"id":$id,"method":"$method"}"""
-      } else {
-        """{"id":$id,"method":"$method",$extra}"""
-      }
-      synchronized(out) {
-        app.cash.zipline.internal.cdp.WebSocketProtocol.sendText(debugSocket, json)
-      }
-    }
-
-    fun awaitResponse(id: Int): String = await("\"id\":$id")
-
-    fun awaitEvent(method: String): String = await("\"method\":\"$method\"")
-
-    fun await(marker: String, andAlso: String? = null): String {
-      val deadline = System.currentTimeMillis() + 15_000
-      val stash = mutableListOf<String>()
-      try {
-        while (System.currentTimeMillis() < deadline) {
-          val msg = incoming.poll(500, TimeUnit.MILLISECONDS) ?: continue
-          stash += msg
-          if (msg.contains(marker) && (andAlso == null || msg.contains(andAlso))) return msg
-        }
-      } finally {
-        incoming.addAll(stash)
-      }
-      throw IllegalStateException("timeout waiting for $marker; saw: $stash")
-    }
-
-    override fun close() {
-      socket.close()
-    }
-
-    private fun readHttpHeaders(input: InputStream): List<String> {
-      val lines = mutableListOf<String>()
-      val current = StringBuilder()
-      while (true) {
-        val b = input.read()
-        if (b == -1) throw EOFException()
-        if (b == '\n'.code) {
-          val line = current.toString().trimEnd('\r')
-          current.clear()
-          if (line.isEmpty()) return lines
-          lines += line
-        } else {
-          current.append(b.toChar())
-        }
-      }
-    }
-
-    private fun readFrame(input: InputStream): String {
-      val b0 = input.read()
-      if (b0 == -1) throw EOFException()
-      val b1 = input.read()
-      if (b1 == -1) throw EOFException()
-      var length = (b1 and 0x7F).toLong()
-      if (length == 126L) {
-        length = (input.read().toLong() shl 8) or input.read().toLong()
-      } else if (length == 127L) {
-        length = 0
-        for (i in 0 until 8) length = (length shl 8) or input.read().toLong()
-      }
-      val payload = ByteArray(length.toInt())
-      var offset = 0
-      while (offset < payload.size) {
-        val read = input.read(payload, offset, payload.size - offset)
-        if (read == -1) throw EOFException()
-        offset += read
-      }
-      return String(payload, Charsets.UTF_8)
     }
   }
 

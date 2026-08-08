@@ -2,11 +2,10 @@
 
 package app.cash.zipline
 
+import app.cash.zipline.internal.cdp.CdpTestClient
 import app.cash.zipline.internal.cdp.DebugServerSocket
 import app.cash.zipline.internal.cdp.DebugSocket
-import app.cash.zipline.internal.cdp.WebSocketProtocol
 import app.cash.zipline.internal.cdp.closeQuietly
-import app.cash.zipline.internal.cdp.connectDebugSocket
 import app.cash.zipline.internal.cdp.httpGet
 import app.cash.zipline.internal.cdp.startDebugThread
 import kotlin.concurrent.atomics.AtomicBoolean
@@ -71,7 +70,7 @@ class CdpDebugTest {
     // Discovery: /json/list advertises the debug target like chrome://inspect expects.
     val sessionId = discoverSessionId()
 
-    CdpClient(sessionId).use { cdp ->
+    CdpTestClient.connect(PORT, sessionId).use { cdp ->
       cdp.send(1, "Runtime.enable")
       cdp.send(2, "Debugger.enable")
       cdp.awaitResponse(2)
@@ -127,7 +126,7 @@ class CdpDebugTest {
 
     // A second client (e.g. a reopened DevTools window) must receive scriptParsed
     // events again even though the Debugger domain was already enabled before.
-    CdpClient(sessionId).use { cdp ->
+    CdpTestClient.connect(PORT, sessionId).use { cdp ->
       cdp.send(1, "Runtime.enable")
       cdp.send(2, "Debugger.enable")
       cdp.awaitResponse(2)
@@ -211,8 +210,10 @@ class CdpDebugTest {
             break
           }
           try {
-            val request = WebSocketProtocol.readHttpRequest(client)
-            val path = request?.path?.substringBefore('?') ?: "/"
+            val requestLine = readHttpLine(client) ?: return@startDebugThread
+            // Skip headers.
+            while (readHttpLine(client)?.isNotEmpty() == true) Unit
+            val path = requestLine.split(' ').getOrNull(1)?.substringBefore('?') ?: "/"
             val body = paths[path]
             if (body == null) {
               client.write("HTTP/1.1 404 NF\r\nContent-Length: 0\r\n\r\n".encodeToByteArray())
@@ -237,6 +238,21 @@ class CdpDebugTest {
       } catch (_: Throwable) {
       }
     }
+
+    /** Reads one CRLF-terminated header line, or null on EOF. */
+    private fun readHttpLine(socket: DebugSocket): String? {
+      val line = StringBuilder()
+      while (true) {
+        val b = socket.read()
+        if (b == -1) {
+          if (line.isEmpty()) return null
+          throw EOFException()
+        }
+        if (b == '\r'.code) continue
+        if (b == '\n'.code) return line.toString()
+        line.append(b.toChar())
+      }
+    }
   }
 
   private fun evaluateSupported(jsEngine: JsEngine): Boolean {
@@ -254,85 +270,6 @@ class CdpDebugTest {
     val match = Regex(""""id":"(\d+)"""").find(body)
     assertNotNull(match, "no debug target in /json/list: $body")
     return match.groupValues[1]
-  }
-
-  /** A minimal CDP WebSocket client: unmasked client frames (accepted by our server). */
-  private class CdpClient(sessionId: String) : AutoCloseable {
-    private val socket = connectDebugSocket("127.0.0.1", PORT)
-    private val messages = Channel<String>(Channel.UNLIMITED)
-
-    init {
-      val request = buildString {
-        append("GET /devtools/page/$sessionId HTTP/1.1\r\n")
-        append("Host: localhost:$PORT\r\n")
-        append("Upgrade: websocket\r\n")
-        append("Connection: Upgrade\r\n")
-        append("Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n")
-        append("\r\n")
-      }
-      socket.write(request.encodeToByteArray())
-      val statusLine = readHttpLine()
-      assertTrue(statusLine.contains("101"), "WebSocket upgrade failed: $statusLine")
-      while (readHttpLine().isNotEmpty()) Unit // Skip headers.
-
-      startDebugThread("CdpTest-reader") {
-        try {
-          while (true) {
-            messages.trySend(readFrame(socket))
-          }
-        } catch (_: Throwable) {
-          // Closed.
-        }
-      }
-    }
-
-    fun send(id: Int, method: String, extra: String = "") {
-      val json = buildString {
-        append("""{"id":""").append(id).append(""","method":""").append('"').append(method).append('"')
-        if (extra.isNotEmpty()) append(',').append(extra)
-        append('}')
-      }
-      WebSocketProtocol.sendText(socket, json)
-    }
-
-    suspend fun awaitResponse(id: Int): String = awaitMessage(""""id":$id""")
-
-    suspend fun awaitEvent(method: String): String = awaitMessage(""""method":"$method"""")
-
-    suspend fun awaitEventContaining(marker: String): String = awaitMessage(marker)
-
-    private val stash = mutableListOf<String>()
-
-    private suspend fun awaitMessage(marker: String): String {
-      stash.indexOfFirst { it.contains(marker) }.let { index ->
-        if (index != -1) return stash.removeAt(index)
-      }
-      val deadline = TimeSource.Monotonic.markNow() + kotlin.time.Duration.parse("30s")
-      while (deadline.hasNotPassedNow()) {
-        val message = messages.tryReceive().getOrNull()
-        if (message == null) {
-          delay(5)
-          continue
-        }
-        if (message.contains(marker)) return message
-        stash.add(message)
-      }
-      throw AssertionError("timed out waiting for $marker")
-    }
-
-    private fun readHttpLine(): String {
-      val line = StringBuilder()
-      while (true) {
-        val b = socket.read()
-        if (b == -1) throw EOFException()
-        if (b == '\n'.code) return line.toString().trimEnd('\r')
-        line.append(b.toChar())
-      }
-    }
-
-    override fun close() {
-      socket.closeQuietly()
-    }
   }
 
   private companion object {
@@ -378,27 +315,5 @@ class CdpDebugTest {
         "CAMECwEBBwEABQF5f2L2vItC2AqOU9zbjfS6m9ONKbEU",
     )
 
-    /** Reads one server-to-client (unmasked) WebSocket text frame. */
-    fun readFrame(socket: DebugSocket): String {
-      val b0 = socket.read()
-      if (b0 == -1) throw EOFException()
-      val b1 = socket.read()
-      if (b1 == -1) throw EOFException()
-      var length = (b1 and 0x7F).toLong()
-      if (length == 126L) {
-        length = (socket.read().toLong() shl 8) or socket.read().toLong()
-      } else if (length == 127L) {
-        length = 0
-        for (i in 0 until 8) length = (length shl 8) or socket.read().toLong()
-      }
-      val payload = ByteArray(length.toInt())
-      var offset = 0
-      while (offset < payload.size) {
-        val read = socket.readInto(payload, offset, payload.size - offset)
-        if (read == -1) throw EOFException()
-        offset += read
-      }
-      return payload.decodeToString()
-    }
   }
 }

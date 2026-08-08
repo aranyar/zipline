@@ -219,7 +219,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
   # The CDP debugger (incl. the CDP agent in API/hermes/cdp) is enabled for
   # non-lean builds only: lean excludes the JS parser, which the debugger
   # needs both for Runtime.evaluate and for parsing CDP JSON. CDP debugging
-  # therefore requires the full engine (-PhermesLean=false).
+  # therefore requires the full engine (-PhermesProd=false).
   if(HERMESVM_LEAN)
     set(HERMES_ENABLE_DEBUGGER OFF)
   else()

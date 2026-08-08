@@ -23,10 +23,11 @@ import okio.IOException
 /**
  * Exposes a running [JsEngine] to Chrome DevTools via the Chrome DevTools Protocol (CDP).
  *
- * The server speaks enough HTTP for Chrome's target discovery (`/json`, `/json/list`,
- * `/json/version`) and upgrades `/devtools/page/<id>` to a WebSocket that carries CDP messages
- * into the Hermes CDP agent. Sockets and threads come from the platform transport
- * (see DebugTransport.kt). Typical usage on Android:
+ * This is the platform-neutral core: debug sessions, the CDP message dispatch
+ * and the DevTools protocol shims the Hermes agent doesn't implement. The
+ * actual HTTP/WebSocket server is platform-specific (Ktor CIO on JNI
+ * platforms, raw sockets on Kotlin/Native; see startCdpServer). Typical usage
+ * on Android:
  *
  * ```
  * System.setProperty("app.cash.zipline.cdp.port", "9222") // before Zipline starts
@@ -37,13 +38,22 @@ import okio.IOException
  *
  * On Kotlin/Native (iOS), set the ZIPLINE_CDP_PORT environment variable instead.
  */
+
+/** A connected debugger client (Ktor WebSocket on JNI, raw socket elsewhere). */
+internal interface CdpClientConnection {
+  /** Sends a text frame; on failure the connection is marked closed ([isOpen] false). */
+  fun sendText(text: String)
+
+  fun isOpen(): Boolean
+
+  /** Closes the connection, best effort. */
+  fun closeQuietly()
+}
 internal class CdpDebugServer(
   private val port: Int,
 ) {
   private val sessionsLock = DebugLock()
   private val sessions = mutableListOf<DebugSession>()
-  private var serverSocket: DebugServerSocket? = null
-
   /**
    * Work queue for blocking fetches to the dev server, serviced by a small
    * fixed pool. DevTools fires hundreds of resource requests (every .js,
@@ -74,22 +84,6 @@ internal class CdpDebugServer(
     fetchTasks.trySend(task)
   }
 
-  fun start() {
-    val socket = DebugServerSocket(port)
-    serverSocket = socket
-    startDebugThread("ZiplineCdp-accept") {
-      log("info", "Zipline CDP debug server listening on port $port", null)
-      while (true) {
-        val client = try {
-          socket.accept()
-        } catch (e: IOException) {
-          break // Server socket closed.
-        }
-        startDebugThread("ZiplineCdp-client") { handleConnection(client) }
-      }
-    }
-  }
-
   fun attach(jsEngine: JsEngine, scope: CoroutineScope) {
     // Locked: Zipline instances may be created concurrently, and the
     // smallest-free-id check-then-act below must not hand out duplicate ids.
@@ -118,68 +112,32 @@ internal class CdpDebugServer(
     session.close()
   }
 
-  private fun handleConnection(socket: DebugSocket) {
-    try {
-      socket.setTcpNoDelay()
-      val request = WebSocketProtocol.readHttpRequest(socket) ?: return socket.closeQuietly()
-      val path = request.path.substringBefore('?')
-      // The Host header is interpolated into JSON responses; strip anything
-      // that isn't a valid host:port character so it can't break the JSON.
-      val host = request.headers["host"]
-        ?.filter { it.isLetterOrDigit() || it in ".:-[]" }
-        ?.takeIf { it.isNotEmpty() }
-        ?: "localhost:$port"
-
-      when {
-        path == "/json/version" -> WebSocketProtocol.writeHttpResponse(
-          socket, 200, "OK",
-          """{"Browser":"Zipline/Hermes","Protocol-Version":"1.3",""" +
-            """"webSocketDebuggerUrl":"ws://$host/devtools/page/${firstSessionId() ?: ""}"}""",
-        ).also { socket.closeQuietly() }
-
-        path == "/json" || path == "/json/list" -> WebSocketProtocol.writeHttpResponse(
-          socket, 200, "OK", targetsJson(host),
-        ).also { socket.closeQuietly() }
-
-        path.startsWith("/devtools/page/") -> {
-          val id = path.removePrefix("/devtools/page/")
-          val session = sessionsLock.withLock { sessions.firstOrNull { it.id == id } }
-          val key = request.headers["sec-websocket-key"]
-          val upgrade = request.headers["upgrade"]?.lowercase()
-          if (session == null || key == null || upgrade != "websocket") {
-            WebSocketProtocol.writeHttpResponse(socket, 404, "Not Found", "[]")
-            socket.closeQuietly()
-            return
-          }
-          WebSocketProtocol.writeWebSocketUpgrade(socket, key)
-          session.addClient(socket)
-          try {
-            WebSocketProtocol.readFrames(socket) { text ->
-              session.onCdpMessage(text)
-            }
-          } finally {
-            session.removeClient(socket)
-            socket.closeQuietly()
-          }
-        }
-
-        else -> {
-          WebSocketProtocol.writeHttpResponse(socket, 404, "Not Found", "[]")
-          socket.closeQuietly()
-        }
-      }
-    } catch (_: IOException) {
-      socket.closeQuietly()
-    } catch (t: Throwable) {
-      log("warn", "Zipline CDP: connection failed: ${t.message}", t)
-      socket.closeQuietly()
-    }
-  }
+  /** The session for `/devtools/page/<id>`, or null when unknown. */
+  fun session(id: String): DebugSession? =
+    sessionsLock.withLock { sessions.firstOrNull { it.id == id } }
 
   private fun firstSessionId(): String? =
     sessionsLock.withLock { sessions.firstOrNull()?.id }
 
-  private fun targetsJson(host: String): String {
+  /** The `/json/version` response body. [host] is the request's Host header. */
+  fun versionJson(host: String?): String {
+    val h = sanitizeHost(host)
+    return """{"Browser":"Zipline/Hermes","Protocol-Version":"1.3",""" +
+      """"webSocketDebuggerUrl":"ws://$h/devtools/page/${firstSessionId() ?: ""}"}"""
+  }
+
+  private fun sanitizeHost(host: String?): String {
+    // The Host header is interpolated into JSON responses; strip anything
+    // that isn't a valid host:port character so it can't break the JSON.
+    return host
+      ?.filter { it.isLetterOrDigit() || it in ".:-[]" }
+      ?.takeIf { it.isNotEmpty() }
+      ?: "localhost:$port"
+  }
+
+  /** The `/json` and `/json/list` response body. [host] is the request's Host header. */
+  fun targetsJson(host: String?): String {
+    val host = sanitizeHost(host)
     // Point at Chrome's bundled DevTools frontend (chrome://inspect opens this
     // for discovered targets). The RN fusebox frontend remains available from
     // the dev server at /debugger-frontend/rn_fusebox.html?ws=<host>/...
@@ -202,7 +160,7 @@ internal class CdpDebugServer(
     private val scope: CoroutineScope,
   ) {
     private val clientsLock = DebugLock()
-    private val clients = mutableListOf<DebugSocket>()
+    private val clients = mutableListOf<CdpClientConnection>()
     private val drainScheduled = AtomicBoolean(false)
 
     private val mapsLock = DebugLock()
@@ -259,14 +217,13 @@ internal class CdpDebugServer(
           pendingRuntimeEnableIds.remove(responseId)
         }
         for (client in clientsLock.withLock { clients.toList() }) {
-          try {
-            WebSocketProtocol.sendText(client, out)
-            if (reannounceContext) {
-              WebSocketProtocol.sendText(client, EXECUTION_CONTEXT_CREATED)
-            }
-          } catch (t: Throwable) {
-            // A dead client must not starve the others.
-            log("warn", "Zipline CDP: dropping client: ${t.message}", null)
+          client.sendText(out)
+          if (reannounceContext) {
+            client.sendText(EXECUTION_CONTEXT_CREATED)
+          }
+          // A dead client must not starve the others.
+          if (!client.isOpen()) {
+            log("warn", "Zipline CDP: dropping client", null)
             clientsLock.withLock { clients.remove(client) }
           }
         }
@@ -592,9 +549,8 @@ internal class CdpDebugServer(
 
     private fun sendToClients(json: String) {
       for (client in clientsLock.withLock { clients.toList() }) {
-        try {
-          WebSocketProtocol.sendText(client, json)
-        } catch (_: IOException) {
+        client.sendText(json)
+        if (!client.isOpen()) {
           clientsLock.withLock { clients.remove(client) }
         }
       }
@@ -649,7 +605,7 @@ internal class CdpDebugServer(
       }
     }
 
-    fun addClient(socket: DebugSocket) {
+    fun addClient(conn: CdpClientConnection) {
       // Single-debugger semantics: a new DevTools client replaces any previous
       // one. Sharing one agent across clients cross-talks responses and events
       // (each frontend sees the other's traffic), which breaks client-side
@@ -658,15 +614,11 @@ internal class CdpDebugServer(
         val had = clients.isNotEmpty()
         if (had) {
           for (old in clients) {
-            try {
-              WebSocketProtocol.sendClose(old)
-            } catch (_: IOException) {
-            }
             old.closeQuietly()
           }
           clients.clear()
         }
-        clients.add(socket)
+        clients.add(conn)
         had
       }
       if (hadClients) {
@@ -679,12 +631,12 @@ internal class CdpDebugServer(
       // vanishes). Announce the default context to the new client. Stock Chrome
       // DevTools discards it (Runtime domain not yet enabled) and gets a second
       // announcement after its Runtime.enable instead.
-      sendSafe(socket, EXECUTION_CONTEXT_CREATED)
+      sendSafe(conn, EXECUTION_CONTEXT_CREATED)
     }
 
-    fun removeClient(socket: DebugSocket) {
+    fun removeClient(conn: CdpClientConnection) {
       val nowEmpty = clientsLock.withLock {
-        clients.remove(socket)
+        clients.remove(conn)
         clients.isEmpty()
       }
       if (nowEmpty) {
@@ -695,11 +647,10 @@ internal class CdpDebugServer(
       }
     }
 
-    private fun sendSafe(socket: DebugSocket, json: String) {
-      try {
-        WebSocketProtocol.sendText(socket, json)
-      } catch (_: IOException) {
-        clientsLock.withLock { clients.remove(socket) }
+    private fun sendSafe(conn: CdpClientConnection, json: String) {
+      conn.sendText(json)
+      if (!conn.isOpen()) {
+        clientsLock.withLock { clients.remove(conn) }
       }
     }
 
@@ -710,10 +661,6 @@ internal class CdpDebugServer(
         copy
       }
       for (client in snapshot) {
-        try {
-          WebSocketProtocol.sendClose(client)
-        } catch (_: IOException) {
-        }
         client.closeQuietly()
       }
     }

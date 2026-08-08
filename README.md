@@ -225,7 +225,7 @@ System.setProperty("app.cash.zipline.cdp.port", "9222")
 **App side (iOS / Kotlin/Native).** Set the `ZIPLINE_CDP_PORT` environment variable before the
 first `Zipline` instance is created (e.g. in the Xcode scheme's environment variables, or via
 `setenv("ZIPLINE_CDP_PORT", "9222", 1)` early in app startup). iOS also requires the full,
-non-lean engine — build the library with `-PhermesLean=false` (the CDP debugger needs the JS
+non-lean engine — build the library with `-PhermesProd=false` (the CDP debugger needs the JS
 parser for `Runtime.evaluate`, which lean builds exclude).
 
 Every `Zipline.create(...)` then attaches its engine to a debug server on that port. The server
