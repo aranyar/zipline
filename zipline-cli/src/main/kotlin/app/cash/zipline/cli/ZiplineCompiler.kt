@@ -54,13 +54,6 @@ internal class ZiplineCompiler(
     private const val MODULE_PATH_PREFIX = "./"
     private const val ZIPLINE_EXTENSION = ".zipline"
 
-    /**
-     * Placeholder source map: triggers debug-info emission without translating
-     * debug locations, so the debug line table stays in generated-JS
-     * coordinates (a single file region) and breakpoints resolve everywhere.
-     */
-    private const val EMPTY_SOURCE_MAP =
-      """{"version":3,"file":"bundle.js","sources":["bundle.kt"],"names":[],"mappings":""}"""
   }
 
   fun compile(
@@ -199,42 +192,12 @@ internal class ZiplineCompiler(
 
     val jsEngine = JsEngine.create()
     jsEngine.use {
-      // Passing a source map makes the compiler keep debug info (line tables)
-      // in the bytecode; stripLineNumbers drops it for size in production.
-      // When compiling for CDP debugging (debugSourceUrlPrefix set), the real
-      // Kotlin/JS map is NOT embedded: it would translate debug locations to
-      // .kt coordinates, shattering the debug line table into interleaved
-      // per-file regions that Hermes' breakpoint resolution cannot match
-      // (RN's flow keeps debug info in generated coordinates instead, and the
-      // debugger frontend applies the map itself). An empty map keeps debug
-      // info in JS coordinates while the rewritten real map is served to
-      // DevTools from the output directory.
-      val sourceMap = when {
-        stripLineNumbers -> null
-        debugSourceUrlPrefix != null && jsSourceMapFile.exists() -> EMPTY_SOURCE_MAP
-        jsSourceMapFile.exists() -> jsSourceMapFile.readText()
-        else -> null
-      }
+      val sourceMap = if (jsSourceMapFile.exists()) jsSourceMapFile.readText() else null
+      val bytecode = jsEngine.compile(jsFile.readText(), jsFile.name, sourceMap)
 
-      // With a debug source URL prefix, the script URL baked into the bytecode
-      // points at the development server, so Chrome DevTools can fetch this
-      // .js (and its .js.map) over HTTP while CDP debugging.
-      val sourceUrl = debugSourceUrlPrefix?.let { "${it.trimEnd('/')}/${jsFile.name}" }
-        ?: jsFile.name
-      val bytecode = jsEngine.compile(jsFile.readText(), sourceUrl, sourceMap)
-
-      if (debugSourceUrlPrefix != null) {
-        jsFile.copyTo(File(outputDir, jsFile.name), overwrite = true)
-        if (jsSourceMapFile.exists()) {
-          // Rewrite the map's "sources" (build-dir-relative .kt paths) into
-          // paths the development server can resolve (see --debug-source-root),
-          // so Chrome DevTools can open the original Kotlin files.
-          val mapText = jsSourceMapFile.readText()
-          val rewritten = debugSourceRootDir?.let { rewriteSourceMapSources(mapText, jsSourceMapFile, it) }
-            ?: mapText
-          File(outputDir, jsSourceMapFile.name).writeText(rewritten)
-        }
-      }
+      // NOTE: stripLineNumbers is currently ignored — the QuickJS-era
+      // implementation operated on QuickJS bytecode and has no Hermes
+      // equivalent (the zipline-bytecode module was removed).
 
       val ziplineFile = ZiplineFile(CURRENT_ZIPLINE_VERSION, bytecode.toByteString())
       val sha256 = outputZiplineFile.sink().use { fileSink ->
