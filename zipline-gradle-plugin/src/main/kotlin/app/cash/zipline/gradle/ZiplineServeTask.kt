@@ -40,15 +40,6 @@ abstract class ZiplineServeTask : DefaultTask() {
   @get:Internal
   abstract val siblingRootDir: DirectoryProperty
 
-  /**
-   * React Native debugger-frontend dist directory (with third-party/front_end inside).
-   * When it exists, the development server serves it under /debugger-frontend/ so CDP
-   * debugging works without a hosted DevTools frontend. May point at a non-existent
-   * directory — the server simply won't serve the frontend then.
-   */
-  @get:Internal
-  abstract val debuggerFrontendDir: DirectoryProperty
-
   @get:Optional
   @get:Input
   abstract val port: Property<Int>
@@ -67,7 +58,6 @@ abstract class ZiplineServeTask : DefaultTask() {
         inputDir.get(),
         sourceRootDir.get(),
         siblingRootDir.get(),
-        debuggerFrontendDir.get(),
         port.orNull ?: 8080,
       )
     } else {

@@ -49,20 +49,17 @@ internal open class ZiplineDevelopmentServer internal constructor(
   private val inputDirectory: File,
   private val sourceRootDirectory: File,
   private val siblingRootDirectory: File,
-  private val debuggerFrontendDirectory: File,
   private val port: Int,
 ) : DeploymentHandle {
   @Inject constructor(
     inputDirectory: Directory,
     sourceRootDirectory: Directory,
     siblingRootDirectory: Directory,
-    debuggerFrontendDirectory: Directory,
     port: Int,
   ) : this(
     inputDirectory.asFile,
     sourceRootDirectory.asFile,
     siblingRootDirectory.asFile,
-    debuggerFrontendDirectory.asFile,
     port,
   )
 
@@ -201,15 +198,17 @@ internal open class ZiplineDevelopmentServer internal constructor(
       resp: jakarta.servlet.http.HttpServletResponse,
     ) {
       val path = (req.pathInfo ?: req.servletPath ?: "").removePrefix("/")
-      // Metro stubs this script out as empty; the frontend expects it to exist.
-      if (path == "debugger-frontend/embedder-static/embedderScript.js") {
-        resp.contentType = "application/javascript"
-        resp.setHeader("Cache-Control", "no-cache")
-        return
-      }
       val file = resolve(path)
       if (file == null || !file.isFile) {
         resp.sendError(404)
+        return
+      }
+      // Weak ETag from size + mtime: clients revalidate with If-None-Match
+      // (Cache-Control is no-cache), and unchanged files answer 304.
+      val etag = "W/\"${file.length()}-${file.lastModified()}\""
+      resp.setHeader("ETag", etag)
+      if (req.getHeader("If-None-Match") == etag) {
+        resp.status = 304
         return
       }
       resp.contentType = when (file.extension) {
@@ -229,17 +228,6 @@ internal open class ZiplineDevelopmentServer internal constructor(
 
     private fun resolve(path: String): File? {
       if (path.isEmpty() || path.contains("..")) return null
-      // Serve the React Native DevTools frontend (its rn_fusebox.html shell and
-      // static assets) the same way metro does, from
-      // <debuggerFrontendDirectory>/third-party/front_end/.
-      if (path.startsWith(FRONTEND_PREFIX)) {
-        val frontEnd = File(debuggerFrontendDirectory, "third-party/front_end")
-        if (frontEnd.isDirectory) {
-          val relative = path.removePrefix(FRONTEND_PREFIX).ifEmpty { "rn_fusebox.html" }
-          return File(frontEnd, relative).confinedTo(frontEnd)
-        }
-        return null
-      }
       if (path.startsWith(SIBLING_PREFIX)) {
         return File(siblingRootDirectory, path.removePrefix(SIBLING_PREFIX)).confinedTo(siblingRootDirectory)
       }
@@ -265,7 +253,6 @@ internal open class ZiplineDevelopmentServer internal constructor(
     const val HEARTBEAT_MESSAGE = "heartbeat"
     const val RELOAD_MESSAGE = "reload"
     private const val SIBLING_PREFIX = "__wb_root__/"
-    private const val FRONTEND_PREFIX = "debugger-frontend/"
     private val logger = org.gradle.api.logging.Logging.getLogger(ZiplineDevelopmentServer::class.java)
 
     /** Best-effort `adb reverse` so devices can reach this server via localhost. */

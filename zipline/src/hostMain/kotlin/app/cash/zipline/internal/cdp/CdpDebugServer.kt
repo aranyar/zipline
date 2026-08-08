@@ -139,8 +139,7 @@ internal class CdpDebugServer(
   fun targetsJson(host: String?): String {
     val host = sanitizeHost(host)
     // Point at Chrome's bundled DevTools frontend (chrome://inspect opens this
-    // for discovered targets). The RN fusebox frontend remains available from
-    // the dev server at /debugger-frontend/rn_fusebox.html?ws=<host>/...
+    // for discovered targets).
     val snapshot = sessionsLock.withLock { sessions.toList() }
     val entries = snapshot.map { session ->
       val wsUrl = "ws://$host/devtools/page/${session.id}"
