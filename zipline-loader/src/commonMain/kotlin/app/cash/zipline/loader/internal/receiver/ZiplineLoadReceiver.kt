@@ -34,7 +34,7 @@ internal class ZiplineLoadReceiver(
     val startValue = eventListener.moduleLoadStart(zipline, id)
     try {
       if (byteString.startsWith(ZIPLINE_MAGIC)) {
-        zipline.multiplatformLoadJsModule(byteString.toZiplineFile().quickjsBytecode.toByteArray(), id)
+        zipline.multiplatformLoadJsModule(byteString.toZiplineFile().jsBytecode.toByteArray(), id)
       } else {
         // Source mode (CDP debugging): the slot carries raw JavaScript to be
         // compiled at runtime instead of Hermes bytecode.

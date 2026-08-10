@@ -52,7 +52,7 @@ class ZiplineCompilerTest {
   fun `write to and read from zipline`() {
     val moduleNameToFile = compile("src/test/resources/happyPath/", true)
     for ((moduleName, ziplineFile) in moduleNameToFile) {
-      loadJsModule(jsEngine, moduleName, ziplineFile.quickjsBytecode.toByteArray())
+      loadJsModule(jsEngine, moduleName, ziplineFile.jsBytecode.toByteArray())
     }
 
     val exception = assertFailsWith<Exception> {
@@ -77,7 +77,7 @@ class ZiplineCompilerTest {
   fun `write to and read from zipline no inline`() {
     val moduleNameToFile = compile("src/test/resources/happyPathNoInline/", true)
     for ((moduleName, ziplineFile) in moduleNameToFile) {
-      loadJsModule(jsEngine, moduleName, ziplineFile.quickjsBytecode.toByteArray())
+      loadJsModule(jsEngine, moduleName, ziplineFile.jsBytecode.toByteArray())
     }
 
     val exception = assertFailsWith<Exception> {
@@ -101,7 +101,7 @@ class ZiplineCompilerTest {
   @Test
   fun `no source map`() {    val moduleNameToFile = compile("src/test/resources/happyPathNoSourceMap/", false)
     for ((_, ziplineFile) in moduleNameToFile) {
-      jsEngine.execute(ziplineFile.quickjsBytecode.toByteArray())
+      jsEngine.execute(ziplineFile.jsBytecode.toByteArray())
     }
     assertEquals("Hello, guy!", jsEngine.evaluate("greet('guy')", "test.js"))
   }
@@ -110,7 +110,7 @@ class ZiplineCompilerTest {
   fun `js with imports and exports`() {
     val moduleNameToFile = compile("src/test/resources/jsWithImportsExports/", false)
     for ((name, ziplineFile) in moduleNameToFile) {
-      loadJsModule(jsEngine, name, ziplineFile.quickjsBytecode.toByteArray())
+      loadJsModule(jsEngine, name, ziplineFile.jsBytecode.toByteArray())
     }
   }
 
@@ -134,19 +134,19 @@ class ZiplineCompilerTest {
       removedFiles = File("$rootProject/removed").listFiles()!!.asList(),
     )
     for ((_, ziplineFile) in moduleNameToFile) {
-      jsEngine.execute(ziplineFile.quickjsBytecode.toByteArray())
+      jsEngine.execute(ziplineFile.jsBytecode.toByteArray())
     }
 
     // Jello file was removed
     assertFalse(File("$outputDir/jello.zipline").exists())
     // Bello file was added
-    jsEngine.execute(readZiplineFile(File("$outputDir/bello.zipline")).quickjsBytecode.toByteArray())
+    jsEngine.execute(readZiplineFile(File("$outputDir/bello.zipline")).jsBytecode.toByteArray())
     assertEquals("Bello!", jsEngine.evaluate("bello()", "test.js"))
     // Hello file was replaced with bonjour
-    jsEngine.execute(readZiplineFile(File("$outputDir/hello.zipline")).quickjsBytecode.toByteArray())
+    jsEngine.execute(readZiplineFile(File("$outputDir/hello.zipline")).jsBytecode.toByteArray())
     assertEquals("Bonjour, guy!", jsEngine.evaluate("greet('guy')", "test.js"))
     // Yello file remains untouched
-    jsEngine.execute(readZiplineFile(File("$outputDir/yello.zipline")).quickjsBytecode.toByteArray())
+    jsEngine.execute(readZiplineFile(File("$outputDir/yello.zipline")).jsBytecode.toByteArray())
     assertEquals("HELLO", jsEngine.evaluate("greet()", "test.js"))
   }
 

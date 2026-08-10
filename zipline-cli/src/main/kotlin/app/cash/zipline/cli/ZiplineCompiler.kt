@@ -196,7 +196,7 @@ internal class ZiplineCompiler(
       val bytecode = jsEngine.compile(jsFile.readText(), jsFile.name, sourceMap)
 
       // NOTE: stripLineNumbers is currently ignored — the QuickJS-era
-      // implementation operated on QuickJS bytecode and has no Hermes
+      // implementation operated on the QuickJS-era bytecode and has no Hermes
       // equivalent (the zipline-bytecode module was removed).
 
       val ziplineFile = ZiplineFile(CURRENT_ZIPLINE_VERSION, bytecode.toByteString())

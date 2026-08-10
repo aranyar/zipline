@@ -30,7 +30,7 @@ abstract class ZiplineExtension {
   abstract val apiTracking: Property<Boolean>
 
   /**
-   * True to strip line number information from the encoded QuickJS bytecode in production builds.
+   * True to strip line number information from the encoded JS bytecode in production builds.
    * Line numbers will not be included in stack traces. This is false by default.
    */
   abstract val stripLineNumbers: Property<Boolean>
