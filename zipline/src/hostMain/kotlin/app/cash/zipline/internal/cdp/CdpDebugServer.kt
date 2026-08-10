@@ -109,9 +109,7 @@ internal class CdpDebugServer(
 
   fun detach(jsEngine: JsEngine) {
     val session = runBlocking { sessionsLock.withLock {
-      val found = sessions.firstOrNull { it.jsEngine === jsEngine }
-      if (found != null) sessions.remove(found)
-      found
+      sessions.firstOrNull { it.jsEngine === jsEngine }?.also { sessions.remove(it) }
     } } ?: return
     runBlocking { session.close() }
   }

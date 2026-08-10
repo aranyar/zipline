@@ -112,6 +112,18 @@ kotlin {
       dependencies {
         api(libs.okio.core)
       }
+      if (hermesProd) {
+        // The shared WebSocket client connection rides on ktor-websockets,
+        // which only the debug transports use.
+        kotlin {
+          srcDir("kotlin")
+          exclude("app/cash/zipline/internal/cdp/KtorWebSocketConnection.kt")
+        }
+      } else {
+        dependencies {
+          implementation(libs.ktor.websockets)
+        }
+      }
     }
     val hostTest by creating {
       dependsOn(commonTest)

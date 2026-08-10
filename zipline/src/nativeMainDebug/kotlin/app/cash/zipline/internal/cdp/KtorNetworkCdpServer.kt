@@ -1,5 +1,3 @@
-@file:OptIn(ExperimentalAtomicApi::class)
-
 package app.cash.zipline.internal.cdp
 
 import app.cash.zipline.internal.log
@@ -13,12 +11,7 @@ import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.ByteWriteChannel
 import io.ktor.utils.io.readUTF8LineTo
 import io.ktor.utils.io.writeStringUtf8
-import io.ktor.websocket.Frame
 import io.ktor.websocket.RawWebSocket
-import io.ktor.websocket.WebSocketSession
-import io.ktor.websocket.readText
-import kotlin.concurrent.atomics.AtomicBoolean
-import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -89,28 +82,16 @@ private class KtorNetworkCdpServer(
             return
           }
           writeWebSocketUpgrade(write, key)
-          val ws = RawWebSocket(
-            read,
-            write,
-            maxFrameSize = 64L * 1024L * 1024L,
-            masking = false,
-            coroutineContext,
+          session.serveWebSocket(
+            RawWebSocket(
+              read,
+              write,
+              maxFrameSize = 64L * 1024L * 1024L,
+              masking = false,
+              coroutineContext,
+            ),
+            scope,
           )
-          val conn = KtorNetworkCdpClientConnection(socket, ws, scope)
-          session.addClient(conn)
-          try {
-            for (frame in ws.incoming) {
-              when (frame) {
-                is Frame.Text -> session.onCdpMessage(frame.readText())
-                is Frame.Ping -> conn.sendPong(frame.data)
-                is Frame.Close -> break
-                else -> Unit
-              }
-            }
-          } finally {
-            session.removeClient(conn)
-            conn.closeQuietly()
-          }
         }
 
         else -> {
@@ -191,53 +172,6 @@ private class KtorNetworkCdpServer(
     private const val WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
     private val selectorManager by lazy { SelectorManager(Dispatchers.Default) }
-  }
-}
-
-private class KtorNetworkCdpClientConnection(
-  private val socket: Socket,
-  private val ws: WebSocketSession,
-  private val scope: CoroutineScope,
-) : CdpClientConnection {
-  private val open = AtomicBoolean(true)
-
-  override fun sendText(text: String) {
-    if (!open.load()) return
-    scope.launch {
-      try {
-        ws.send(Frame.Text(text))
-        ws.flush()
-      } catch (_: Throwable) {
-        open.store(false)
-      }
-    }
-  }
-
-  suspend fun sendPong(data: ByteArray) {
-    try {
-      ws.send(Frame.Pong(data))
-      ws.flush()
-    } catch (_: Throwable) {
-      open.store(false)
-    }
-  }
-
-  override fun isOpen(): Boolean = open.load()
-
-  override fun closeQuietly() {
-    if (open.compareAndSet(true, false)) {
-      scope.launch {
-        try {
-          ws.send(Frame.Close())
-          ws.flush()
-        } catch (_: Throwable) {
-        }
-        try {
-          socket.close()
-        } catch (_: Throwable) {
-        }
-      }
-    }
   }
 }
 
