@@ -1,5 +1,7 @@
 package app.cash.zipline.internal.cdp
 
+import kotlinx.coroutines.launch
+
 /**
  * Platform plumbing for the CDP debug server: threads, locks, HTTP fetches
  * and port configuration. Actuals exist for JNI (java.net/Thread) and
@@ -17,8 +19,23 @@ internal expect class DebugSemaphore(permits: Int) {
   fun release()
 }
 
-/** Starts a daemon background thread. [block] must not throw. */
-internal expect fun startDebugThread(name: String, block: () -> Unit)
+/**
+ * Starts a background thread named [name] running [block], swallowing any
+ * failure. Implemented with coroutines on every platform (a fresh
+ * single-thread context per call, i.e. a real thread on JVM and a worker on
+ * Kotlin/Native). Note these threads are not daemon-marked on JVM; the debug
+ * server is a debug-time feature whose host processes exit via System.exit.
+ */
+@kotlin.OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
+internal fun startDebugThread(name: String, block: () -> Unit) {
+  kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.newSingleThreadContext(name), block = {
+    try {
+      block()
+    } catch (_: Throwable) {
+      // A crashing debug-server thread must not take down the host app.
+    }
+  })
+}
 
 /**
  * Performs an HTTP GET and returns the response body on HTTP 200, null on

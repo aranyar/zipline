@@ -79,21 +79,6 @@ internal actual class DebugSemaphore actual constructor(permits: Int) {
   }
 }
 
-// pthread_create/pthread_detach are not usable from nativeMain: pthread_t is
-// a pointer on Apple platforms and ULong on Linux, so the commonizer drops
-// them from the shared platform.posix. Coroutine workers give us a real
-// thread per debug thread on every Kotlin/Native target instead.
-@OptIn(DelicateCoroutinesApi::class)
-internal actual fun startDebugThread(name: String, block: () -> Unit) {
-  kotlinx.coroutines.GlobalScope.launch(newSingleThreadContext(name)) {
-    try {
-      block()
-    } catch (_: Throwable) {
-      // A crashing debug-server thread must not take down the host app.
-    }
-  }
-}
-
 private val HTTP_URL = Regex("""^http://([^/:]+)(?::(\d+))?(/.*)?$""")
 
 /** Blocking connect to [host]:[port]; throws [IOException] on failure. */

@@ -14,10 +14,6 @@ internal actual class DebugSemaphore actual constructor(permits: Int) {
   actual fun release() = semaphore.release()
 }
 
-internal actual fun startDebugThread(name: String, block: () -> Unit) {
-  Thread(block, name).apply { isDaemon = true }.start()
-}
-
 internal actual fun httpGet(url: String, connectTimeoutMs: Int, readTimeoutMs: Int): String? {
   val connection = java.net.URL(url).openConnection() as HttpURLConnection
   connection.connectTimeout = connectTimeoutMs
