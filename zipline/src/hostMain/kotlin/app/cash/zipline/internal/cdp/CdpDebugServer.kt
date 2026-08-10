@@ -71,7 +71,7 @@ internal class CdpDebugServer(
   init {
     repeat(FETCH_POOL_SIZE) {
       startDebugThread("ZiplineCdp-fetch-$it") {
-        kotlinx.coroutines.runBlocking {
+        runBlocking {
           for (task in fetchTasks) {
             try {
               task()
@@ -250,80 +250,88 @@ internal class CdpDebugServer(
         null
       }
       val method = message?.get("method").asString()
-      if (method == "Debugger.enable") {
-        message?.get("id").asString()?.toLongOrNull()?.let { id ->
-          mapsLock.withLock { pendingDebuggerEnableIds.add(id) }
+      when (method) {
+        "Debugger.enable" -> {
+          message?.get("id").asString()?.toLongOrNull()?.let { id ->
+            mapsLock.withLock { pendingDebuggerEnableIds.add(id) }
+          }
         }
-      }
-      if (method == "Runtime.enable") {
-        message?.get("id").asString()?.toLongOrNull()?.let { id ->
-          mapsLock.withLock { pendingRuntimeEnableIds.add(id) }
+
+        "Runtime.enable" -> {
+          message?.get("id").asString()?.toLongOrNull()?.let { id ->
+            mapsLock.withLock { pendingRuntimeEnableIds.add(id) }
+          }
         }
-      }
-      if (method == "Debugger.getScriptSource") {
-        val requestId = message?.get("id").asString()
-        val scriptId = message?.get("params").asObject()?.get("scriptId").asString()
-        val url = scriptId?.let { sid -> mapsLock.withLock { scriptUrls[sid] } }
-        if (requestId != null && url != null) {
-          serveScriptSource(requestId, url)
-          return
+
+        "Debugger.getScriptSource" -> {
+          val requestId = message?.get("id").asString()
+          val scriptId = message?.get("params").asObject()?.get("scriptId").asString()
+          val url = scriptId?.let { sid -> mapsLock.withLock { scriptUrls[sid] } }
+          if (requestId != null && url != null) {
+            serveScriptSource(requestId, url)
+            return
+          }
         }
-      }
-      // Current DevTools uses getPossibleBreakpoints for inline (column-level)
-      // breakpoints, which the Hermes CDP agent does not implement. Compute the
-      // locations from the engine's debug line table on the JS thread.
-      if (method == "Debugger.getPossibleBreakpoints") {
-        val requestId = message?.get("id").asString()
-        val params = message?.get("params").asObject()
-        val start = params?.get("start").asObject()
-        val end = params?.get("end").asObject()
-        val scriptId = start?.get("scriptId").asString()?.toIntOrNull()
-        if (requestId != null && scriptId != null) {
-          servePossibleBreakpoints(
-            requestId,
-            scriptId,
-            start?.get("lineNumber").asString()?.toIntOrNull() ?: 0,
-            start?.get("columnNumber").asString()?.toIntOrNull() ?: 0,
-            end?.get("lineNumber").asString()?.toIntOrNull() ?: -1,
-            end?.get("columnNumber").asString()?.toIntOrNull() ?: -1,
-          )
-          return
+
+        // Current DevTools uses getPossibleBreakpoints for inline (column-level)
+        // breakpoints, which the Hermes CDP agent does not implement. Compute the
+        // locations from the engine's debug line table on the JS thread.
+        "Debugger.getPossibleBreakpoints" -> {
+          val requestId = message?.get("id").asString()
+          val params = message?.get("params").asObject()
+          val start = params?.get("start").asObject()
+          val end = params?.get("end").asObject()
+          val scriptId = start?.get("scriptId").asString()?.toIntOrNull()
+          if (requestId != null && scriptId != null) {
+            servePossibleBreakpoints(
+              requestId,
+              scriptId,
+              start?.get("lineNumber").asString()?.toIntOrNull() ?: 0,
+              start?.get("columnNumber").asString()?.toIntOrNull() ?: 0,
+              end?.get("lineNumber").asString()?.toIntOrNull() ?: -1,
+              end?.get("columnNumber").asString()?.toIntOrNull() ?: -1,
+            )
+            return
+          }
         }
-      }
-      // Modern DevTools loads source maps (and other resources) through the target
-      // via Network.loadNetworkResource + IO.read, which the Hermes CDP agent does
-      // not implement. Answer it here, again fetching from the Zipline dev server.
-      if (method == "Network.loadNetworkResource") {
-        val requestId = message?.get("id").asString()
-        val url = message?.get("params").asObject()?.get("url").asString()
-        if (requestId != null && url != null) {
-          serveNetworkResource(requestId, url)
-          return
+
+        // Modern DevTools loads source maps (and other resources) through the target
+        // via Network.loadNetworkResource + IO.read, which the Hermes CDP agent does
+        // not implement. Answer it here, again fetching from the Zipline dev server.
+        "Network.loadNetworkResource" -> {
+          val requestId = message?.get("id").asString()
+          val url = message?.get("params").asObject()?.get("url").asString()
+          if (requestId != null && url != null) {
+            serveNetworkResource(requestId, url)
+            return
+          }
         }
-      }
-      if (method == "IO.read") {
-        val requestId = message?.get("id").asString()
-        val params = message?.get("params").asObject()
-        val handle = params?.get("handle").asString()
-        if (requestId != null && handle != null) {
-          serveIoRead(
-            requestId, handle,
-            params?.get("offset").asString()?.toIntOrNull(),
-            params?.get("size").asString()?.toIntOrNull(),
-          )
-          return
+
+        "IO.read" -> {
+          val requestId = message?.get("id").asString()
+          val params = message?.get("params").asObject()
+          val handle = params?.get("handle").asString()
+          if (requestId != null && handle != null) {
+            serveIoRead(
+              requestId, handle,
+              params?.get("offset").asString()?.toIntOrNull(),
+              params?.get("size").asString()?.toIntOrNull(),
+            )
+            return
+          }
         }
-      }
-      if (method == "IO.close") {
-        val requestId = message?.get("id").asString()
-        val handle = message?.get("params").asObject()?.get("handle").asString()
-        if (requestId != null && handle != null) {
-          mapsLock.withLock { ioStreams.remove(handle) }
-          sendToClients(buildJsonObject {
-            put("id", requestId.toLongOrNull() ?: 0L)
-            putJsonObject("result") {}
-          }.toString())
-          return
+
+        "IO.close" -> {
+          val requestId = message?.get("id").asString()
+          val handle = message?.get("params").asObject()?.get("handle").asString()
+          if (requestId != null && handle != null) {
+            mapsLock.withLock { ioStreams.remove(handle) }
+            sendToClients(buildJsonObject {
+              put("id", requestId.toLongOrNull() ?: 0L)
+              putJsonObject("result") {}
+            }.toString())
+            return
+          }
         }
       }
       jsEngine.cdpHandleCommand(jsonText)
@@ -343,7 +351,7 @@ internal class CdpDebugServer(
       }
     }
 
-    private suspend fun serveScriptSource(requestId: String, url: String) {
+    private fun serveScriptSource(requestId: String, url: String) {
       // Fetch off the WebSocket reader thread; reply directly to the clients.
       submitFetchTask {
         val mark = kotlin.time.TimeSource.Monotonic.markNow()
@@ -371,7 +379,7 @@ internal class CdpDebugServer(
       }
     }
 
-    private suspend fun servePossibleBreakpoints(
+    private fun servePossibleBreakpoints(
       requestId: String,
       scriptId: Int,
       startLine: Int,
@@ -482,7 +490,7 @@ internal class CdpDebugServer(
       return values.copyOf(count)
     }
 
-    private suspend fun serveNetworkResource(requestId: String, url: String) {
+    private fun serveNetworkResource(requestId: String, url: String) {
       submitFetchTask {
         val mark = kotlin.time.TimeSource.Monotonic.markNow()
         val content = fetchScriptSource(url)
@@ -521,6 +529,13 @@ internal class CdpDebugServer(
       }
     }
 
+    /**
+     * Answers CDP `IO.read`: serves chunks of a stream previously opened by
+     * `Network.loadNetworkResource` (stored in [ioStreams]). Explicit offsets
+     * are random-access and don't advance the stream; sequential reads advance
+     * it. `eof` is reported only on an empty read after full delivery —
+     * DevTools discards data when eof arrives early.
+     */
     private suspend fun serveIoRead(requestId: String, handle: String, offset: Int?, size: Int?) {
       val response = mapsLock.withLock {
         val stream = ioStreams[handle]
