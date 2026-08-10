@@ -88,6 +88,9 @@ data class ZiplineFile(
     }
 
     fun ByteString.toZiplineFile() = read(Buffer().write(this))
+
+    /** True if [this] starts with the zipline container magic bytes. */
+    fun ByteString.isZiplineFile(): Boolean = startsWith(MAGIC_PREFIX)
   }
 }
 
