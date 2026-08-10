@@ -55,30 +55,30 @@ void sendMessage(Session* session, const std::string& json) {
 // The agent may invoke these callbacks from arbitrary threads (including
 // during ~CDPAgent), so they capture the raw session pointer; the session
 // outlives the agent because detach() resets the agent first.
-std::unique_ptr<cdp::CDPAgent> createAgent(Session* raw, cdp::State state) {
+std::unique_ptr<cdp::CDPAgent> createAgent(Session* session, cdp::State state) {
   return cdp::CDPAgent::create(
       /*executionContextID=*/1,
-      *raw->debugApi,
+      *session->debugApi,
       /*enqueueRuntimeTaskCallback=*/
-      [raw](debugger::RuntimeTask task) {
+      [session](debugger::RuntimeTask task) {
         {
-          std::lock_guard<std::mutex> lock(raw->queueMutex);
-          raw->taskQueue.push_back(std::move(task));
+          std::lock_guard<std::mutex> lock(session->queueMutex);
+          session->taskQueue.push_back(std::move(task));
         }
-        if (raw->paused.load()) {
+        if (session->paused.load()) {
           // The JS thread is blocked in the debugger pause loop, so the
           // normal drain (posted to the Zipline dispatcher) can't run. Service
           // the queue through the debugger's interrupt path instead.
-          raw->debugApi->asyncDebuggerAPI().triggerInterrupt_TS(
-              [raw](facebook::hermes::HermesRuntime&) {
-                drainTasks(raw->ctx);
+          session->debugApi->asyncDebuggerAPI().triggerInterrupt_TS(
+              [session](facebook::hermes::HermesRuntime&) {
+                drainTasks(session->ctx);
               });
         } else {
-          raw->listener.onTasksEnqueued(raw->listener.ref);
+          session->listener.onTasksEnqueued(session->listener.ref);
         }
       },
       /*messageCallback=*/
-      [raw](const std::string& json) { sendMessage(raw, json); },
+      [session](const std::string& json) { sendMessage(session, json); },
       std::move(state));
 }
 

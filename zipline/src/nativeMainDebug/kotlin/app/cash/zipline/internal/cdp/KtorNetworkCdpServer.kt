@@ -241,5 +241,5 @@ private class KtorNetworkCdpClientConnection(
   }
 }
 
-internal actual fun startCdpServer(port: Int, core: CdpDebugServer): CdpServerHandle =
+internal actual fun initCdpServer(port: Int, core: CdpDebugServer): CdpServerHandle =
   KtorNetworkCdpServer(port, core)

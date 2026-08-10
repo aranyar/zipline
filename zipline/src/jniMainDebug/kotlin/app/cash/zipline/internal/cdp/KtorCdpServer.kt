@@ -43,7 +43,7 @@ private class KtorCdpServer(
         call.respondText(core.targetsJson(call.request.headers["Host"]), ContentType.Application.Json)
       }
       webSocket("/devtools/page/{id}") {
-        val session = call.parameters["id"]?.let(core::session)
+        val session = call.parameters["id"]?.let { core.session(it) }
         if (session == null) {
           close()
           return@webSocket
@@ -106,5 +106,5 @@ private class KtorCdpClientConnection(
   }
 }
 
-internal actual fun startCdpServer(port: Int, core: CdpDebugServer): CdpServerHandle =
+internal actual fun initCdpServer(port: Int, core: CdpDebugServer): CdpServerHandle =
   KtorCdpServer(port, core)

@@ -32,53 +32,6 @@ private fun checkSocket(result: Int, what: String) {
   if (result < 0) throw IOException("$what failed")
 }
 
-internal actual class DebugLock actual constructor() {
-  private val mutex = nativeHeap.alloc<pthread_mutex_t>().apply {
-    pthread_mutex_init(ptr, null)
-  }
-
-  actual fun <T> withLock(block: () -> T): T {
-    pthread_mutex_lock(mutex.ptr)
-    try {
-      return block()
-    } finally {
-      pthread_mutex_unlock(mutex.ptr)
-    }
-  }
-}
-
-internal actual class DebugSemaphore actual constructor(permits: Int) {
-  private val mutex = nativeHeap.alloc<pthread_mutex_t>().apply {
-    pthread_mutex_init(ptr, null)
-  }
-  private val cond = nativeHeap.alloc<pthread_cond_t>().apply {
-    pthread_cond_init(ptr, null)
-  }
-  private var count = permits
-
-  actual fun acquire() {
-    pthread_mutex_lock(mutex.ptr)
-    try {
-      while (count == 0) {
-        pthread_cond_wait(cond.ptr, mutex.ptr)
-      }
-      count--
-    } finally {
-      pthread_mutex_unlock(mutex.ptr)
-    }
-  }
-
-  actual fun release() {
-    pthread_mutex_lock(mutex.ptr)
-    try {
-      count++
-      pthread_cond_signal(cond.ptr)
-    } finally {
-      pthread_mutex_unlock(mutex.ptr)
-    }
-  }
-}
-
 private val HTTP_URL = Regex("""^http://([^/:]+)(?::(\d+))?(/.*)?$""")
 
 /** Blocking connect to [host]:[port]; throws [IOException] on failure. */

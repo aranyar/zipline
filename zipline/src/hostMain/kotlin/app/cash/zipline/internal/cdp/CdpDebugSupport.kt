@@ -2,6 +2,8 @@ package app.cash.zipline.internal.cdp
 
 import app.cash.zipline.JsEngine
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Entry point for CDP debugging of a [JsEngine]. Debugging is enabled by [cdpDebugPort]
@@ -10,15 +12,15 @@ import kotlinx.coroutines.CoroutineScope
  * each new engine to a shared debug server on that port.
  */
 internal object CdpDebugSupport {
-  private val serverLock = DebugLock()
+  private val serverLock = kotlinx.coroutines.sync.Mutex()
   private var server: CdpDebugServer? = null
 
   fun attachIfEnabled(jsEngine: JsEngine, scope: CoroutineScope) {
     val port = cdpDebugPort() ?: return
-    val server = serverLock.withLock {
+    val server = runBlocking { serverLock.withLock {
       server ?: try {
         CdpDebugServer(port).also {
-          startCdpServer(port, it).start()
+          initCdpServer(port, it).start()
           server = it
         }
       } catch (t: Throwable) {
@@ -31,11 +33,11 @@ internal object CdpDebugSupport {
         )
         null
       }
-    } ?: return
+    } } ?: return
     server.attach(jsEngine, scope)
   }
 
   fun detach(jsEngine: JsEngine) {
-    serverLock.withLock { server }?.detach(jsEngine)
+    runBlocking { serverLock.withLock { server } }?.detach(jsEngine)
   }
 }

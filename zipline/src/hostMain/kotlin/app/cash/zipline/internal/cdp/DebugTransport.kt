@@ -8,17 +8,6 @@ import kotlinx.coroutines.launch
  * Kotlin/Native (POSIX/coroutines) platforms.
  */
 
-/** A mutual exclusion lock for non-coroutine code. */
-internal expect class DebugLock() {
-  fun <T> withLock(block: () -> T): T
-}
-
-/** A counting semaphore for blocking (non-coroutine) code. */
-internal expect class DebugSemaphore(permits: Int) {
-  fun acquire()
-  fun release()
-}
-
 /**
  * Starts a background thread named [name] running [block], swallowing any
  * failure. Implemented with coroutines on every platform (a fresh
@@ -52,7 +41,7 @@ internal expect fun cdpDebugPort(): Int?
  * WebSocket. Ktor CIO on JNI platforms, raw sockets on Kotlin/Native.
  * Throws when the port cannot be bound.
  */
-internal expect fun startCdpServer(port: Int, core: CdpDebugServer): CdpServerHandle
+internal expect fun initCdpServer(port: Int, core: CdpDebugServer): CdpServerHandle
 
 internal interface CdpServerHandle {
   /** Starts accepting connections (returns immediately). */

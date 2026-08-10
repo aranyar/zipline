@@ -47,7 +47,7 @@ class SourceMapUrlProbeTest {
 
       zipline.loadJsModule(TEST_JS, SCRIPT_URL)
 
-      val scriptParsed = cdp.await("""scriptParsed"""", """probe.js""")
+      val scriptParsed = cdp.awaitMessage("""scriptParsed"""", """probe.js""")
       println("scriptParsed: $scriptParsed")
       assertTrue(scriptParsed.contains("probe.js"), scriptParsed)
       assertTrue(
@@ -65,7 +65,7 @@ class SourceMapUrlProbeTest {
 
       // Trigger the function; execution pauses at the breakpoint.
       cdp.send(4, "Runtime.evaluate", """"params":{"expression":"probeMe()"}""")
-      val paused = cdp.await("""paused"""")
+      val paused = cdp.awaitMessage("""paused"""")
       assertTrue(paused.contains("probeMe"), paused)
 
       // Frame eval requires the in-memory scoping table; constant folding

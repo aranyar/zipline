@@ -138,11 +138,19 @@ kotlin {
       dependsOn(hostMain)
       dependencies {
         api(libs.androidx.annotation)
+      }
+      if (hermesProd) {
+        // Prod: no CDP debug server and no Ktor dependencies.
+        kotlin.srcDir("src/jniMainProd/kotlin")
+      } else {
         // The Ktor CIO debug server runs on JNI platforms; Kotlin/Native keeps
         // the raw-socket server (Ktor server is JVM-only). Debug-time only.
-        implementation(libs.ktor.server.core)
-        implementation(libs.ktor.server.cio)
-        implementation(libs.ktor.server.websockets)
+        kotlin.srcDir("src/jniMainDebug/kotlin")
+        dependencies {
+          implementation(libs.ktor.server.core)
+          implementation(libs.ktor.server.cio)
+          implementation(libs.ktor.server.websockets)
+        }
       }
     }
     val jniTest by creating {
@@ -190,11 +198,17 @@ kotlin {
 
     val nativeMain by getting {
       dependsOn(hostMain)
-      dependencies {
+      if (hermesProd) {
+        // Prod: no CDP debug server and no Ktor dependencies.
+        kotlin.srcDir("src/nativeMainProd/kotlin")
+      } else {
         // Ktor server is JVM-only; on Kotlin/Native the debug server uses
         // ktor-network sockets + the ktor-websockets frame codec.
-        implementation(libs.ktor.network)
-        implementation(libs.ktor.websockets)
+        kotlin.srcDir("src/nativeMainDebug/kotlin")
+        dependencies {
+          implementation(libs.ktor.network)
+          implementation(libs.ktor.websockets)
+        }
       }
     }
     val nativeTest by getting {

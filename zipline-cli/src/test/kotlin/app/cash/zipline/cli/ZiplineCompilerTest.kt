@@ -50,27 +50,49 @@ class ZiplineCompilerTest {
 
   @Test
   fun `write to and read from zipline`() {
-    val moduleNameToFile = compile("src/test/resources/happyPath/", true)
-    for ((moduleName, ziplineFile) in moduleNameToFile) {
-      loadJsModule(jsEngine, moduleName, ziplineFile.jsBytecode.toByteArray())
+    // Compilation output differs by build mode: prod ships optimized bytecode
+    // without debug info (everything inlines to one frame); debug builds skip
+    // optimization and emit debug info (the full goBoom chain with Kotlin
+    // file:line frames). The CDP port property switches the compiler's engine
+    // into debug compilation.
+    val hermesProd = System.getProperty("hermesProd")?.toBooleanStrictOrNull() ?: true
+    if (!hermesProd) {
+      System.setProperty("app.cash.zipline.cdp.port", "9399")
     }
+    try {
+      val moduleNameToFile = compile("src/test/resources/happyPath/", true)
+      for ((moduleName, ziplineFile) in moduleNameToFile) {
+        loadJsModule(jsEngine, moduleName, ziplineFile.jsBytecode.toByteArray())
+      }
 
-    val exception = assertFailsWith<Exception> {
-      jsEngine.evaluate("require('./hello.js').sayHello()", "test.js")
+      val exception = assertFailsWith<Exception> {
+        jsEngine.evaluate("require('./hello.js').sayHello()", "test.js")
+      }
+      if (hermesProd) {
+        assertThat(exception.stackTraceToString()).startsWith(
+          """
+          |app.cash.zipline.JsException: boom!
+          |	at JavaScript.sayHello(<js-code>:1)
+          |
+          """.trimMargin(),
+        )
+      } else {
+        assertThat(exception.stackTraceToString()).startsWith(
+          """
+          |app.cash.zipline.JsException: boom!
+          |	at JavaScript.goBoom1(<js-code>:1)
+          |	at JavaScript.goBoom2(throwException.kt:9)
+          |	at JavaScript.goBoom3(throwException.kt:6)
+          |	at JavaScript.sayHello(throwException.kt:3)
+          |
+          """.trimMargin(),
+        )
+      }
+    } finally {
+      if (!hermesProd) {
+        System.clearProperty("app.cash.zipline.cdp.port")
+      }
     }
-    // NOTE: debug info (emitted when a source map is present) now maps the
-    // whole inlined goBoom chain back to the Kotlin source locations, so the
-    // full chain shows up with throwException.kt file:line frames.
-    assertThat(exception.stackTraceToString()).startsWith(
-      """
-      |app.cash.zipline.JsException: boom!
-      |	at JavaScript.goBoom1(<js-code>:1)
-      |	at JavaScript.goBoom2(throwException.kt:9)
-      |	at JavaScript.goBoom3(throwException.kt:6)
-      |	at JavaScript.sayHello(throwException.kt:3)
-      |
-      """.trimMargin(),
-    )
   }
 
   @Test

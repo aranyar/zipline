@@ -2,18 +2,6 @@ package app.cash.zipline.internal.cdp
 
 import java.net.HttpURLConnection
 
-internal actual class DebugLock actual constructor() {
-  actual fun <T> withLock(block: () -> T): T = synchronized(this, block)
-}
-
-internal actual class DebugSemaphore actual constructor(permits: Int) {
-  private val semaphore = java.util.concurrent.Semaphore(permits)
-
-  actual fun acquire() = semaphore.acquire()
-
-  actual fun release() = semaphore.release()
-}
-
 internal actual fun httpGet(url: String, connectTimeoutMs: Int, readTimeoutMs: Int): String? {
   val connection = java.net.URL(url).openConnection() as HttpURLConnection
   connection.connectTimeout = connectTimeoutMs
