@@ -26,12 +26,6 @@ internal fun startDebugThread(name: String, block: () -> Unit) {
   })
 }
 
-/**
- * Performs an HTTP GET and returns the response body on HTTP 200, null on
- * other statuses. Throws [okio.IOException] on connection/IO errors.
- */
-internal expect fun httpGet(url: String, connectTimeoutMs: Int, readTimeoutMs: Int): String?
-
 /** The TCP port the CDP debug server should listen on, or null when debugging is disabled. */
 internal expect fun cdpDebugPort(): Int?
 

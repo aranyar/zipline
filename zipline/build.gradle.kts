@@ -119,11 +119,14 @@ kotlin {
           srcDir("src/hostMainProd/kotlin")
           exclude("app/cash/zipline/internal/cdp/KtorWebSocketConnection.kt")
           exclude("app/cash/zipline/internal/cdp/KtorNetworkCdpServer.kt")
+          exclude("app/cash/zipline/internal/cdp/KtorHttpGet.kt")
         }
       } else {
         dependencies {
           implementation(libs.ktor.network)
           implementation(libs.ktor.websockets)
+          implementation(libs.ktor.client.core)
+          implementation(libs.ktor.client.cio)
         }
       }
     }
@@ -144,6 +147,7 @@ kotlin {
           implementation(libs.ktor.client.core)
           implementation(libs.ktor.client.cio)
           implementation(libs.ktor.client.websockets)
+          implementation(libs.ktor.network)
         }
       }
     }

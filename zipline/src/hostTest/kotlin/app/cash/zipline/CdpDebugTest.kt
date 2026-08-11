@@ -264,7 +264,7 @@ class CdpDebugTest {
     }
   }
 
-  private fun discoverSessionId(): String {
+  private suspend fun discoverSessionId(): String {
     val body = httpGet("http://localhost:$PORT/json/list", 5000, 5000)
     assertNotNull(body, "no response from /json/list")
     val match = Regex(""""id":"(\d+)"""").find(body)

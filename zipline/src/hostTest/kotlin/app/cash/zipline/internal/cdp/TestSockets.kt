@@ -1,41 +1,72 @@
 package app.cash.zipline.internal.cdp
 
+import io.ktor.network.selector.SelectorManager
+import io.ktor.network.sockets.ServerSocket as KtorServerSocket
+import io.ktor.network.sockets.Socket as KtorSocket
+import io.ktor.network.sockets.aSocket
+import io.ktor.network.sockets.openReadChannel
+import io.ktor.network.sockets.openWriteChannel
+import io.ktor.utils.io.readAvailable
+import io.ktor.utils.io.readByte
+import io.ktor.utils.io.writeFully
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
+
 /**
- * Blocking sockets for tests (the CDP test client and the mini dev server).
- * The production transports are Ktor-based; these exist only for tests.
- * All methods throw [okio.IOException] on IO errors.
+ * Blocking sockets for tests (the mini dev server in CdpDebugTest), backed by
+ * ktor-network, which is multiplatform. The production CDP transports are
+ * Ktor-based; this shim exists only so tests can speak plain HTTP over
+ * loopback. All methods throw [okio.IOException] on IO errors.
  */
+private val testSocketSelectorManager by lazy { SelectorManager(Dispatchers.Default) }
 
 /** Blocking server socket. Accepts loopback connections only. */
-internal expect class DebugServerSocket(port: Int) {
-  /** Blocks until a client connects. Throws [okio.IOException] when closed. */
-  fun accept(): DebugSocket
+internal class DebugServerSocket(port: Int) {
+  private val server: KtorServerSocket = runBlocking {
+    aSocket(testSocketSelectorManager).tcp().bind("127.0.0.1", port)
+  }
 
-  fun close()
+  /** Blocks until a client connects. Throws [okio.IOException] when closed. */
+  fun accept(): DebugSocket = DebugSocket(runBlocking { server.accept() })
+
+  fun close() = server.close()
 }
 
-/**
- * Blocking connected socket. [write] must be safe for concurrent use from
- * multiple threads (implementations serialize writes internally); each call
- * delivers [bytes] atomically with respect to other writers.
- */
-internal expect class DebugSocket {
-  fun setTcpNoDelay()
+/** Blocking connected socket; [write] serializes concurrent writers. */
+internal class DebugSocket(
+  private val socket: KtorSocket,
+) {
+  private val readChannel = socket.openReadChannel()
+  private val writeChannel = socket.openWriteChannel(autoFlush = false)
+
+  fun setTcpNoDelay() {
+    // No-op: loopback test traffic doesn't need it.
+  }
 
   /** Reads a single byte, or -1 on EOF. */
-  fun read(): Int
+  fun read(): Int = runBlocking {
+    try {
+      readChannel.readByte().toInt() and 0xFF
+    } catch (_: Throwable) {
+      -1
+    }
+  }
 
   /** Reads up to [length] bytes into [buffer] at [offset]; returns the count, or -1 on EOF. */
-  fun readInto(buffer: ByteArray, offset: Int, length: Int): Int
+  fun readInto(buffer: ByteArray, offset: Int, length: Int): Int = runBlocking {
+    readChannel.readAvailable(buffer, offset, length)
+  }
 
-  /** Writes all of [bytes]. */
-  fun write(bytes: ByteArray)
+  /** Writes all of [bytes]. Test-only: call from a single thread per socket. */
+  fun write(bytes: ByteArray) {
+    runBlocking {
+      writeChannel.writeFully(bytes, 0, bytes.size)
+      writeChannel.flush()
+    }
+  }
 
-  fun close()
+  fun close() = socket.close()
 }
-
-/** Connects a blocking client socket to [host]:[port]. */
-internal expect fun connectDebugSocket(host: String, port: Int): DebugSocket
 
 /** Closes quietly. */
 internal fun DebugSocket.closeQuietly() {
