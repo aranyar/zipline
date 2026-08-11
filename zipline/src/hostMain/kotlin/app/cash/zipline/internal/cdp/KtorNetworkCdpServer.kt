@@ -22,7 +22,7 @@ import okio.ByteString.Companion.toByteString
 import kotlin.coroutines.coroutineContext
 
 /**
- * The CDP debug server for Kotlin/Native: ktor-network sockets on loopback
+ * The CDP debug server for all platforms: ktor-network sockets on loopback
  * plus the ktor-websockets frame codec (Ktor's server engines are JVM-only,
  * so the HTTP request parsing and upgrade handshake stay manual — the same
  * few lines the Ktor plugin would run anyway).
@@ -175,5 +175,5 @@ private class KtorNetworkCdpServer(
   }
 }
 
-internal actual fun initCdpServer(port: Int, core: CdpDebugServer): CdpServerHandle =
+internal fun initCdpServer(port: Int, core: CdpDebugServer): CdpServerHandle =
   KtorNetworkCdpServer(port, core)

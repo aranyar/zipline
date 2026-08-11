@@ -35,14 +35,6 @@ internal expect fun httpGet(url: String, connectTimeoutMs: Int, readTimeoutMs: I
 /** The TCP port the CDP debug server should listen on, or null when debugging is disabled. */
 internal expect fun cdpDebugPort(): Int?
 
-/**
- * Starts the platform CDP debug server for [core]: HTTP target discovery
- * (`/json`, `/json/list`, `/json/version`) and the `/devtools/page/<id>`
- * WebSocket. Ktor CIO on JNI platforms, raw sockets on Kotlin/Native.
- * Throws when the port cannot be bound.
- */
-internal expect fun initCdpServer(port: Int, core: CdpDebugServer): CdpServerHandle
-
 internal interface CdpServerHandle {
   /** Starts accepting connections (returns immediately). */
   fun start()
