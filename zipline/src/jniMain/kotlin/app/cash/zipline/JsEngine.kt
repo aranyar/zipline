@@ -3,6 +3,7 @@ package app.cash.zipline
 import app.cash.zipline.internal.bridge.CallChannel
 import app.cash.zipline.internal.bridge.INBOUND_CHANNEL_NAME
 import app.cash.zipline.internal.bridge.OUTBOUND_CHANNEL_NAME
+import app.cash.zipline.internal.cdp.cdpDebugPort
 import app.cash.zipline.internal.log
 import java.io.Closeable
 
@@ -19,7 +20,7 @@ actual class JsEngine private constructor(
   Closeable {
 
   /** Captured at construction; see [evaluate]. */
-  private val debugCompilation = System.getProperty("app.cash.zipline.cdp.port") != null
+  private val debugCompilation = cdpDebugPort() != null
 
   actual companion object {
     init {
@@ -36,7 +37,7 @@ actual class JsEngine private constructor(
      */
     @JvmStatic
     actual fun create(): JsEngine {
-      val forceEager = System.getProperty("app.cash.zipline.cdp.port") != null
+      val forceEager = cdpDebugPort() != null
       val ctx = createContext(forceEager)
       if (ctx == 0L) {
         throw OutOfMemoryError("Cannot create JsEngine instance")
