@@ -12,10 +12,12 @@ import okio.IOException
 import platform.posix.*
 
 /**
- * POSIX transport for the CDP debug server (Kotlin/Native: iOS, macOS, Linux).
- * Blocking sockets + pthreads; the debug server is a debug-only tool, so the
- * implementation favors simplicity over performance (byte-at-a-time reads,
- * leaked pthread mutexes for long-lived locks).
+ * Kotlin/Native plumbing for the CDP debug server: a minimal blocking
+ * POSIX-socket HTTP GET (used to fetch script sources from
+ * the dev server; raw sockets also bypass ATS), the ZIPLINE_CDP_PORT env var
+ * read, and the fetch-candidate list. The debug server is a debug-only tool,
+ * so the implementation favors simplicity over performance. The server itself
+ * uses ktor-network + ktor-websockets (see KtorNetworkCdpServer).
  */
 
 private val sigPipeIgnored = AtomicBoolean(false)
