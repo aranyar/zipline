@@ -36,7 +36,7 @@ abstract class ZiplineServeTask : DefaultTask() {
   @get:Internal
   abstract val sourceRootDir: DirectoryProperty
 
-  /** Parent of the repo root; sibling checkouts are served under /__wb_root__/. */
+  /** Parent of the repo root; sibling checkouts are served under /__kt_root__/. */
   @get:Internal
   abstract val siblingRootDir: DirectoryProperty
 

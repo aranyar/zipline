@@ -43,7 +43,7 @@ import org.gradle.deployment.internal.DeploymentHandle
  * 'reload' method whenever the manifest should be checked for an update.
  *
  * For CDP debugging it additionally serves source files: the repo root (so DevTools can open
- * original Kotlin sources referenced from source maps) and sibling checkouts under /__wb_root__/.
+ * original Kotlin sources referenced from source maps) and sibling checkouts under /__kt_root__/.
  */
 internal open class ZiplineDevelopmentServer internal constructor(
   private val inputDirectory: File,
@@ -189,7 +189,7 @@ internal open class ZiplineDevelopmentServer internal constructor(
   /**
    * Serves files from [inputDirectory] first, then from the repo root
    * ([sourceRootDirectory]), and finally from sibling checkouts
-   * ([siblingRootDirectory]) under the `__wb_root__/` prefix. All resolutions
+   * ([siblingRootDirectory]) under the `__kt_root__/` prefix. All resolutions
    * are canonicalized and confined to their base directory.
    */
   internal inner class DevSourceServlet : jakarta.servlet.http.HttpServlet() {
@@ -252,7 +252,7 @@ internal open class ZiplineDevelopmentServer internal constructor(
   companion object {
     const val HEARTBEAT_MESSAGE = "heartbeat"
     const val RELOAD_MESSAGE = "reload"
-    private const val SIBLING_PREFIX = "__wb_root__/"
+    private const val SIBLING_PREFIX = "__kt_root__/"
     private val logger = org.gradle.api.logging.Logging.getLogger(ZiplineDevelopmentServer::class.java)
 
     /** Best-effort `adb reverse` so devices can reach this server via localhost. */

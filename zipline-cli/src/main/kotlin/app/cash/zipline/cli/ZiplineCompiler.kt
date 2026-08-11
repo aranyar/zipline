@@ -116,7 +116,7 @@ internal class ZiplineCompiler(
   /**
    * Rewrites a source map's "sources" entries so they resolve under the directory the
    * development server serves. Paths inside [sourceRootDir] become root-relative; paths in
-   * sibling checkouts (e.g. redwood-tret, zipline-hermes) become `__wb_root__/...`; anything
+   * sibling checkouts (e.g. redwood-tret, zipline-hermes) become `__kt_root__/...`; anything
    * else (CI/buildbot paths) is left unchanged and will simply be unavailable in DevTools.
    */
   private fun rewriteSourceMapSources(mapText: String, mapFile: File, sourceRootDir: File): String {
@@ -136,7 +136,7 @@ internal class ZiplineCompiler(
         resolved.path.startsWith(root.path + File.separator) ->
           JsonPrimitive(resolved.relativeTo(root).path)
         parent != null && resolved.path.startsWith(parent.path + File.separator) ->
-          JsonPrimitive("__wb_root__/" + resolved.relativeTo(parent).path)
+          JsonPrimitive("__kt_root__/" + resolved.relativeTo(parent).path)
         else -> element
       }
     }

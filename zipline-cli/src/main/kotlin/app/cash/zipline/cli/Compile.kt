@@ -66,7 +66,7 @@ internal class Compile : CliktCommand("compile") {
     .help(
       """
       |Repository root used to rewrite source map "sources" into server-resolvable
-      |paths (sibling checkouts are mapped under __wb_root__). Only meaningful
+      |paths (sibling checkouts are mapped under __kt_root__). Only meaningful
       |together with --debug-source-url-prefix.
       """.trimMargin(),
     )
