@@ -30,6 +30,14 @@ abstract class ZiplineExtension {
   abstract val apiTracking: Property<Boolean>
 
   /**
+   * TCP port of the CDP (Chrome DevTools Protocol) debug server, e.g. 9222. On Android app
+   * modules the plugin generates an `app.cash.zipline.ZiplineCdpConfig` class with the port
+   * and the engine starts its debug server automatically; attach Chrome with
+   * `adb forward tcp:9222 tcp:9222` + chrome://inspect. Unset by default: no debugging.
+   */
+  abstract val cdpDebugPort: Property<Int>
+
+  /**
    * True to strip line number information from the encoded JS bytecode in production builds.
    * Line numbers will not be included in stack traces. This is false by default.
    */

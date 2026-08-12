@@ -24,12 +24,12 @@ class SourceMapUrlProbeTest {
 
   @BeforeTest
   fun setUp() {
-    System.setProperty("app.cash.zipline.cdp.port", PORT.toString())
+    Zipline.cdpDebugPort = PORT
   }
 
   @AfterTest
   fun tearDown() {
-    System.clearProperty("app.cash.zipline.cdp.port")
+    Zipline.cdpDebugPort = null
     zipline?.close()
     zipline = null
   }

@@ -6,10 +6,10 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.withLock
 
 /**
- * Entry point for CDP debugging of a [JsEngine]. Debugging is enabled by [cdpDebugPort]
- * (the `app.cash.zipline.cdp.port` system property on JNI platforms, the `ZIPLINE_CDP_PORT`
- * environment variable on Kotlin/Native); [app.cash.zipline.Zipline.create] then attaches
- * each new engine to a shared debug server on that port.
+ * Entry point for CDP debugging of a [JsEngine]. Debugging is enabled by
+ * [app.cash.zipline.Zipline.cdpDebugPort] (with the `ZIPLINE_CDP_PORT` environment
+ * variable as a fallback on Kotlin/Native); [app.cash.zipline.Zipline.create] then
+ * attaches each new engine to a shared debug server on that port.
  */
 internal object CdpDebugSupport {
   private val serverLock = kotlinx.coroutines.sync.Mutex()

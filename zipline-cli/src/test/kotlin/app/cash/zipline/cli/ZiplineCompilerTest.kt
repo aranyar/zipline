@@ -17,6 +17,7 @@
 package app.cash.zipline.cli
 
 import app.cash.zipline.JsEngine
+import app.cash.zipline.Zipline
 import app.cash.zipline.ZiplineManifest
 import app.cash.zipline.loader.CURRENT_ZIPLINE_VERSION
 import app.cash.zipline.loader.ZiplineFile
@@ -53,11 +54,11 @@ class ZiplineCompilerTest {
     // Compilation output differs by build mode: prod ships optimized bytecode
     // without debug info (everything inlines to one frame); debug builds skip
     // optimization and emit debug info (the full goBoom chain with Kotlin
-    // file:line frames). The CDP port property switches the compiler's engine
+    // file:line frames). The CDP debug port switches the compiler's engine
     // into debug compilation.
     val hermesProd = System.getProperty("hermesProd")?.toBooleanStrictOrNull() ?: true
     if (!hermesProd) {
-      System.setProperty("app.cash.zipline.cdp.port", "9399")
+      Zipline.cdpDebugPort = 9399
     }
     try {
       val moduleNameToFile = compile("src/test/resources/happyPath/", true)
@@ -90,7 +91,7 @@ class ZiplineCompilerTest {
       }
     } finally {
       if (!hermesProd) {
-        System.clearProperty("app.cash.zipline.cdp.port")
+        Zipline.cdpDebugPort = null
       }
     }
   }

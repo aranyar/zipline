@@ -31,9 +31,9 @@ actual class JsEngine private constructor(
      * Create a new interpreter instance. Calls to this method **must** be matched with
      * calls to [close] on the returned instance to avoid leaking native memory.
      *
-     * When the CDP debug server is enabled (the `app.cash.zipline.cdp.port` system
-     * property is set), the engine compiles JavaScript eagerly so that breakpoints
-     * bind in runtime-compiled source (lazy functions have no code blocks to patch).
+     * When the CDP debug server is enabled ([Zipline.cdpDebugPort] is set), the
+     * engine compiles JavaScript eagerly so that breakpoints bind in
+     * runtime-compiled source (lazy functions have no code blocks to patch).
      */
     @JvmStatic
     actual fun create(): JsEngine {

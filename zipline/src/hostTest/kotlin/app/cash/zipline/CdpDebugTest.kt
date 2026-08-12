@@ -32,9 +32,8 @@ import okio.IOException
 
 /**
  * End-to-end test of CDP (Chrome DevTools Protocol) debugging: starts the debug server via
- * the CDP port config (system property on JNI, ZIPLINE_CDP_PORT env var on Kotlin/Native),
- * connects over HTTP + WebSocket like Chrome DevTools would, and drives the Debugger/Runtime
- * domains.
+ * [Zipline.cdpDebugPort], connects over HTTP + WebSocket like Chrome DevTools would, and
+ * drives the Debugger/Runtime domains.
  *
  * The debugged script is precompiled to Hermes bytecode (with debug info and an embedded source
  * map) and embedded below, because lean engine builds cannot compile JS at runtime.
@@ -45,12 +44,12 @@ class CdpDebugTest {
 
   @BeforeTest
   fun setUp() {
-    setCdpPortEnv(PORT)
+    Zipline.cdpDebugPort = PORT
   }
 
   @AfterTest
   fun tearDown() {
-    setCdpPortEnv(null)
+    Zipline.cdpDebugPort = null
     zipline?.close()
     zipline = null
     (dispatcher as? CloseableCoroutineDispatcher)?.close()

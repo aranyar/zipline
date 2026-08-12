@@ -138,7 +138,6 @@ kotlin {
         kotlin {
           srcDir("kotlin")
           exclude("app/cash/zipline/CdpDebugTest.kt")
-          exclude("app/cash/zipline/CdpTestEnv.kt")
           exclude("app/cash/zipline/internal/cdp/**")
         }
       } else {
@@ -163,7 +162,6 @@ kotlin {
       if (hermesProd) {
         kotlin {
           srcDir("kotlin")
-          exclude("app/cash/zipline/CdpTestEnvJni.kt")
           exclude("app/cash/zipline/internal/cdp/**")
         }
       }
@@ -209,7 +207,6 @@ kotlin {
       if (hermesProd) {
         kotlin {
           srcDir("kotlin")
-          exclude("app/cash/zipline/CdpTestEnvNative.kt")
           exclude("app/cash/zipline/internal/cdp/**")
         }
       }

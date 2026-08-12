@@ -214,6 +214,14 @@ actual class Zipline private constructor(
   }
 
   companion object {
+    /**
+     * TCP port of the CDP (Chrome DevTools Protocol) debug server shared by all engines,
+     * e.g. 9222. Set it before [create] to debug the guest JS with Chrome DevTools; null
+     * (the default) disables debugging. On Kotlin/Native the ZIPLINE_CDP_PORT environment
+     * variable is honored as a fallback.
+     */
+    var cdpDebugPort: Int? = null
+
     fun create(
       dispatcher: CoroutineDispatcher,
       serializersModule: SerializersModule = EmptySerializersModule(),

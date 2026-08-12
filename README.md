@@ -215,11 +215,14 @@ There are a few things you can do to make sure that hot-reload is running as fas
 This fork embeds Hermes with its CDP (Chrome DevTools Protocol) agent enabled, so the guest JS
 can be debugged from Chrome: breakpoints, stepping, call stacks and scopes.
 
-**App side (Android).** Set the debug-port system property before the first `Zipline` instance is
-created (e.g. in `Application.onCreate`, guarded by `FLAG_DEBUGGABLE`):
+**App side (Android).** Set the debug port in the app module's `zipline` extension; the
+plugin generates an `app.cash.zipline.ZiplineCdpConfig` class into the app and the engine
+picks it up automatically — no app code needed:
 
 ```kotlin
-System.setProperty("app.cash.zipline.cdp.port", "9222")
+zipline {
+  cdpDebugPort = 9222
+}
 ```
 
 **App side (iOS / Kotlin/Native).** Set the `ZIPLINE_CDP_PORT` environment variable before the

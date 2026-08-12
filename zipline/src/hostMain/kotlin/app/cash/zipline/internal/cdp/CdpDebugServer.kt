@@ -34,7 +34,7 @@ import okio.IOException
  * on Android:
  *
  * ```
- * System.setProperty("app.cash.zipline.cdp.port", "9222") // before Zipline starts
+ * Zipline.cdpDebugPort = 9222 // before Zipline starts
  * // on the host machine:
  * adb forward tcp:9222 tcp:9222
  * // then open chrome://inspect, or Chrome with the devtoolsFrontendUrl from /json/list
