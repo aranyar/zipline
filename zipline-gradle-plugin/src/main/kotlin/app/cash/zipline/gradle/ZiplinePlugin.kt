@@ -61,6 +61,18 @@ class ZiplinePlugin : KotlinCompilerPluginSupportPlugin {
     ziplineExtension.includeSchemaInFunctionIds.convention(false)
     ziplineExtension.includeApiConstants.convention(false)
 
+    // Default the two DirectoryProperty inputs of ZiplineServeTask to the
+    // project directory and its parent. Tasks that don't override them
+    // (e.g. one-off serve tasks that re-use ZiplineServeTask) get
+    // sensible defaults; sibling-checkout serving still works.
+    val projectDir = target.layout.projectDirectory
+    target.tasks.configureEach {
+      if (it is ZiplineServeTask) {
+        it.sourceRootDir.convention(projectDir)
+        it.siblingRootDir.convention(projectDir.dir(".."))
+      }
+    }
+
     configureCdpDebugPort(target, ziplineExtension)
 
     val kotlinExtension = target.extensions.findByType(KotlinMultiplatformExtension::class.java)
