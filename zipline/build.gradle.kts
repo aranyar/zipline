@@ -636,6 +636,7 @@ fun registerBuildHermesStaticIos(
         -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
         -DCMAKE_OSX_ARCHITECTURES='$architectures' \
         -DHERMESVM_LEAN=${if (hermesProd) "ON" else "OFF"} \
+        -DHERMES_ENABLE_DEBUGGER=${if (hermesProd) "OFF" else "ON"} \
         -DHERMES_IOS_STATIC=ON \
         -DHERMES_SRC='${jsEngineRoot.absolutePath}' \
         -DIMPORT_HOST_COMPILERS='${hermesImportCompilers.absolutePath}'
@@ -774,6 +775,7 @@ android {
           "-DJAVA_HOME=${javaHome ?: ""}",
           // Pass explicitly: the CMake cache from older builds sticks otherwise.
           "-DHERMESVM_LEAN=${if (hermesProd) "TRUE" else "FALSE"}",
+          "-DHERMES_ENABLE_DEBUGGER=${if (hermesProd) "OFF" else "ON"}",
         )
         cFlags("-fstrict-aliasing", "-DCONFIG_VERSION=\\\"${jsEngineVersion()}\\\"")
         cppFlags("-fstrict-aliasing", "-DCONFIG_VERSION=\\\"${jsEngineVersion()}\\\"")

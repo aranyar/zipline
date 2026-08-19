@@ -4,8 +4,10 @@
 #include "ContextJni.h"
 #include "JniUtf8.h"
 
+#if HERMES_ENABLE_DEBUGGER
+
 // JNI adapter for the platform-neutral CDP session (CdpSession.cpp). All
-// session logic (agent, task queue, locking) lives in the shared core; this
+// session logic (server, task queue, locking) lives in the shared core; this
 // file only bridges the Java app.cash.zipline.CdpListener object to the
 // core's function-pointer Listener.
 
@@ -132,3 +134,18 @@ void detach(ContextJni* ctx) {
 }
 
 }  // namespace zipline_cdp
+
+#else  // !HERMES_ENABLE_DEBUGGER
+
+// Prod (lean) builds ship without the CDP agent: all entry points no-op.
+namespace zipline_cdp {
+
+bool attach(ContextJni*, JNIEnv*, jobject) { return false; }
+void handleCommand(ContextJni*, const std::string&) {}
+void resetAgent(ContextJni*) {}
+void drainTasks(ContextJni*) {}
+void detach(ContextJni*) {}
+
+}  // namespace zipline_cdp
+
+#endif  // HERMES_ENABLE_DEBUGGER

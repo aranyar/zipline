@@ -104,6 +104,9 @@ jsi::Value HermesCore_evaluateBytecode(ContextBase* ctx,
 jsi::Value HermesCore_evaluateSource(ContextBase* ctx,
                                      const char* source,
                                      const std::string& sourceURL) {
+#ifdef HERMESVM_LEAN
+  throw std::runtime_error("evaluate() is not available in lean Hermes build");
+#else
   class StringBuffer : public jsi::Buffer {
    public:
     explicit StringBuffer(std::string s) : s_(std::move(s)) {}
@@ -116,6 +119,7 @@ jsi::Value HermesCore_evaluateSource(ContextBase* ctx,
   };
   auto buffer = std::make_shared<StringBuffer>(source ? source : "");
   return ctx->runtime->evaluateJavaScript(buffer, sourceURL);
+#endif // HERMESVM_LEAN
 }
 
 extern "C" {

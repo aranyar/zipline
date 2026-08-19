@@ -136,7 +136,7 @@ class CdpDebugTest {
       )
 
       // DevTools loads script content only via Debugger.getScriptSource (no HTTP
-      // fallback), which the Hermes agent doesn't implement; our debug server
+      // fallback), which the CDP agent doesn't implement; our debug server
       // answers it by fetching the script URL from the dev server. Serve it
       // ourselves here on the URL baked into servedScriptBytecode.
       val scriptSource = "function hitMe() { return 42; }"

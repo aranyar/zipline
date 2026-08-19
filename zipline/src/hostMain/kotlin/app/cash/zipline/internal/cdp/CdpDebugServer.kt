@@ -28,7 +28,7 @@ import okio.IOException
  * Exposes a running [JsEngine] to Chrome DevTools via the Chrome DevTools Protocol (CDP).
  *
  * This is the platform-neutral core: debug sessions, the CDP message dispatch
- * and the DevTools protocol shims the Hermes agent doesn't implement. The
+ * and the DevTools protocol shims the Hermes CDP agent doesn't implement. The
  * actual HTTP/WebSocket server is platform-specific (Ktor CIO on JNI
  * platforms, raw sockets on Kotlin/Native; see initCdpServer). Typical usage
  * on Android:
@@ -187,7 +187,7 @@ internal class CdpDebugServer(
     val listener = object : CdpListener {
       override fun onMessage(json: String): Unit = runBlocking {
         // DevTools persists breakpoints per URL across windows and engine reloads,
-        // so it may try to remove ids the current agent doesn't know. The Hermes
+        // so it may try to remove ids the current agent doesn't know. The CDP
         // agent answers those with an "Unknown breakpoint ID" error and the
         // frontend then keeps showing the breakpoint forever. Make removal
         // idempotent: swallow that specific error so the frontend forgets it.
@@ -202,7 +202,7 @@ internal class CdpDebugServer(
         } else {
           json
         }
-        // The Hermes agent answers Debugger.enable with an empty result, but V8
+        // The CDP agent answers Debugger.enable with an empty result, but V8
         // returns a unique debuggerId and stock Chrome DevTools' breakpoint
         // model depends on it (without it, gutter toggles are no-ops).
         val responseId = RUNTIME_RESPONSE_ID.find(out)?.groupValues?.get(1)?.toLongOrNull()
@@ -702,7 +702,7 @@ internal class CdpDebugServer(
     private const val DEBUGGER_ID = "zipline-hermes-debugger"
 
     /**
-     * The Hermes agent never reports an execution context; without one the
+     * The Hermes CDP agent never reports an execution context; without one the
      * DevTools console has nowhere to evaluate (input silently vanishes).
      */
     private const val EXECUTION_CONTEXT_CREATED =

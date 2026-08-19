@@ -191,6 +191,11 @@ jobject ContextJni::execute(JNIEnv* env, jbyteArray byteCode, jstring fileName) 
 }
 
 jobject ContextJni::evaluate(JNIEnv* env, jstring source, jstring fileName) {
+#ifdef HERMESVM_LEAN
+  throwJavaException(env, "java/lang/UnsupportedOperationException",
+                     "evaluate() is not available in lean Hermes build");
+  return nullptr;
+#else
   // Run any pending CDP runtime tasks (e.g. breakpoint installation) before
   // evaluating more JavaScript. We are on the JS thread here.
   zipline_cdp::drainTasks(this);
@@ -216,6 +221,7 @@ jobject ContextJni::evaluate(JNIEnv* env, jstring source, jstring fileName) {
     return nullptr;
   }
   return toJavaObject(env, result, /*throwOnUnsupportedType=*/false);
+#endif // HERMESVM_LEAN
 }
 
 jbyteArray ContextJni::compile(JNIEnv* env, jstring source, jstring file,
