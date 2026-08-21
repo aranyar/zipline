@@ -1,5 +1,6 @@
 #include <jni.h>
 #include <cstdlib>
+#include <fstream>
 #include <new>
 #ifdef __ANDROID__
 #include <android/log.h>
@@ -10,6 +11,7 @@
 #include "JniUtf8.h"
 #include "ExceptionThrowers.h"
 #include "InboundCallChannel.h"
+#include <jsi/instrumentation.h>
 
 // Android log macros - available to all functions in this file
 #ifdef __ANDROID__
@@ -151,6 +153,69 @@ Java_app_cash_zipline_JsEngine_gc(JNIEnv* env, jobject /*thiz*/, jlong _context)
     return;
   }
   ctx->gc(env);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_app_cash_zipline_JsEngine_nativeStartHeapSampling(JNIEnv* env, jobject /*thiz*/, jlong _context, jlong samplingInterval) {
+  ContextJni* ctx = toContext(_context);
+  if (!ctx) {
+    throwJavaException(env, "java/lang/IllegalStateException",
+                       "JsEngine instance was closed");
+    return;
+  }
+  ctx->runtime->instrumentation().startHeapSampling(
+      static_cast<size_t>(samplingInterval));
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_app_cash_zipline_JsEngine_nativeStopHeapSampling(JNIEnv* env, jobject /*thiz*/, jlong _context, jstring path) {
+  ContextJni* ctx = toContext(_context);
+  if (!ctx) {
+    throwJavaException(env, "java/lang/IllegalStateException",
+                       "JsEngine instance was closed");
+    return JNI_FALSE;
+  }
+  const char* pathChars = env->GetStringUTFChars(path, nullptr);
+  if (!pathChars) {
+    return JNI_FALSE;
+  }
+  std::ofstream os(pathChars, std::ios::binary | std::ios::trunc);
+  bool ok = false;
+  if (os) {
+    try {
+      ctx->runtime->instrumentation().stopHeapSampling(os);
+      os.flush();
+      ok = true;
+    } catch (...) {
+      ok = false;
+    }
+  }
+  env->ReleaseStringUTFChars(path, pathChars);
+  return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_app_cash_zipline_JsEngine_nativeDumpHeapSnapshot(JNIEnv* env, jobject /*thiz*/, jlong _context, jstring path) {
+  ContextJni* ctx = toContext(_context);
+  if (!ctx) {
+    throwJavaException(env, "java/lang/IllegalStateException",
+                       "JsEngine instance was closed");
+    return JNI_FALSE;
+  }
+  const char* pathChars = env->GetStringUTFChars(path, nullptr);
+  if (!pathChars) {
+    return JNI_FALSE;
+  }
+  bool ok = false;
+  try {
+    ctx->runtime->instrumentation().createSnapshotToFile(
+        pathChars, ::facebook::jsi::Instrumentation::HeapSnapshotOptions{});
+    ok = true;
+  } catch (...) {
+    ok = false;
+  }
+  env->ReleaseStringUTFChars(path, pathChars);
+  return ok ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jstring JNICALL
