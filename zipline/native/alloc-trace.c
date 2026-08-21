@@ -39,28 +39,41 @@ void qjs_at_set_sample_rate(unsigned int rate) {
 
 static QjsAtMutex qjs_at_mutex = QJS_AT_MUTEX_INIT;
 
-/* Last native unwind; reused while the allocator call site and the JS stack
-   depth are unchanged (see qjs_at_event). */
-static uintptr_t qjs_at_native_cache[QJS_AT_MAX_NATIVE_FRAMES];
-static uintptr_t qjs_at_native_cache_site = 0;
-static uintptr_t qjs_at_native_cache_fp = 0;
-static int qjs_at_native_cache_js_depth = -1;
-static int qjs_at_native_cache_count = -1;
-static FILE *qjs_at_out = NULL;
-static uintptr_t qjs_at_base = 0;
+/* Stream state + per-session counters + the last native unwind, reused while
+   the allocator call site, JS stack depth and frame pointer are unchanged. */
+typedef struct {
+  FILE *out;
+  uintptr_t base;
+  uint64_t alloc_count;
+  uint64_t alloc_bytes;
+  uint64_t free_count;
+  uint64_t free_bytes;
+  uint64_t realloc_count;
+  uintptr_t native_cache[QJS_AT_MAX_NATIVE_FRAMES];
+  uintptr_t native_cache_site;
+  uintptr_t native_cache_fp;
+  int native_cache_js_depth;
+  int native_cache_count;
+  uint64_t native_hits;
+  uint64_t native_misses;
+} QjsAtStream;
+
+static QjsAtStream qjs_at_stream = {
+  NULL, 0, 0, 0, 0, 0, 0, {0}, 0, 0, -1, -1, 0, 0,
+};
 
 /* Frame interning: a pushed frame's text is emitted once ("D <id> ..."),
    later pushes reference it as "+ <id>". */
-static QjsAtJsFrame *qjs_at_frames = NULL;
-static size_t qjs_at_frames_count = 0;
-static size_t qjs_at_frames_cap = 0;
+typedef struct {
+  QjsAtJsFrame *frames;
+  size_t frames_count;
+  size_t frames_cap;
+  uint32_t *intern;
+} QjsAtIntern;
+
+static QjsAtIntern qjs_at_intern = { NULL, 0, 0, NULL };
+
 #define QJS_AT_INTERN_CAP (1 << 16) /* hash -> frame id + 1 */
-static uint32_t *qjs_at_intern = NULL;
-static uint64_t qjs_at_alloc_count = 0;
-static uint64_t qjs_at_alloc_bytes = 0;
-static uint64_t qjs_at_free_count = 0;
-static uint64_t qjs_at_free_bytes = 0;
-static uint64_t qjs_at_realloc_count = 0;
 
 #if QJS_AT_HAVE_UNWIND
 typedef struct {
@@ -111,7 +124,7 @@ static int qjs_at_capture_native_fp(uintptr_t *pcs, int max) {
       break;
     }
     uintptr_t pc = (uintptr_t)fp[1];
-    pcs[count++] = pc >= qjs_at_base ? pc - qjs_at_base : pc;
+    pcs[count++] = pc >= qjs_at_stream.base ? pc - qjs_at_stream.base : pc;
     prev = fp;
     fp = (void **)*fp;
   }
@@ -132,7 +145,7 @@ static int qjs_at_capture_native(uintptr_t *pcs, int max) {
   u.pcs = pcs;
   u.count = 0;
   u.max = max;
-  u.base = qjs_at_base;
+  u.base = qjs_at_stream.base;
   _Unwind_Backtrace(qjs_at_unwind_callback, &u);
   return u.count;
 #else
@@ -176,24 +189,24 @@ static uint32_t qjs_at_intern_frame(const QjsAtJsFrame *frame) {
                              1469598103934665603ULL);
   size_t index = (size_t)(hash % QJS_AT_INTERN_CAP);
   for (size_t probe = 0; probe < QJS_AT_INTERN_CAP; probe++) {
-    uint32_t slot = qjs_at_intern[index];
+    uint32_t slot = qjs_at_intern.intern[index];
     if (slot == 0) {
-      if (qjs_at_frames_count == qjs_at_frames_cap) {
-        size_t new_cap = qjs_at_frames_cap == 0 ? 256 : qjs_at_frames_cap * 2;
+      if (qjs_at_intern.frames_count == qjs_at_intern.frames_cap) {
+        size_t new_cap = qjs_at_intern.frames_cap == 0 ? 256 : qjs_at_intern.frames_cap * 2;
         QjsAtJsFrame *grown =
-            (QjsAtJsFrame *)realloc(qjs_at_frames, new_cap * sizeof(*grown));
+            (QjsAtJsFrame *)realloc(qjs_at_intern.frames, new_cap * sizeof(*grown));
         if (!grown) {
           return UINT32_MAX;
         }
-        qjs_at_frames = grown;
-        qjs_at_frames_cap = new_cap;
+        qjs_at_intern.frames = grown;
+        qjs_at_intern.frames_cap = new_cap;
       }
-      uint32_t id = (uint32_t)qjs_at_frames_count++;
-      qjs_at_frames[id] = *frame;
-      qjs_at_intern[index] = id + 1;
+      uint32_t id = (uint32_t)qjs_at_intern.frames_count++;
+      qjs_at_intern.frames[id] = *frame;
+      qjs_at_intern.intern[index] = id + 1;
       return id;
     }
-    if (memcmp(&qjs_at_frames[slot - 1], frame, sizeof(*frame)) == 0) {
+    if (memcmp(&qjs_at_intern.frames[slot - 1], frame, sizeof(*frame)) == 0) {
       return slot - 1;
     }
     index = (index + 1) % QJS_AT_INTERN_CAP;
@@ -203,38 +216,38 @@ static uint32_t qjs_at_intern_frame(const QjsAtJsFrame *frame) {
 
 int qjs_at_start(const char *path) {
   qjs_at_mutex_lock(&qjs_at_mutex);
-  if (qjs_at_out) {
-    fclose(qjs_at_out);
-    qjs_at_out = NULL;
+  if (qjs_at_stream.out) {
+    fclose(qjs_at_stream.out);
+    qjs_at_stream.out = NULL;
   }
-  qjs_at_alloc_count = 0;
-  qjs_at_alloc_bytes = 0;
-  qjs_at_free_count = 0;
-  qjs_at_free_bytes = 0;
-  qjs_at_realloc_count = 0;
-  qjs_at_frames_count = 0;
-  qjs_at_native_cache_site = 0;
-  qjs_at_native_cache_fp = 0;
-  qjs_at_native_cache_js_depth = -1;
-  qjs_at_native_cache_count = -1;
-  if (qjs_at_intern) {
-    memset(qjs_at_intern, 0, QJS_AT_INTERN_CAP * sizeof(*qjs_at_intern));
+  qjs_at_stream.alloc_count = 0;
+  qjs_at_stream.alloc_bytes = 0;
+  qjs_at_stream.free_count = 0;
+  qjs_at_stream.free_bytes = 0;
+  qjs_at_stream.realloc_count = 0;
+  qjs_at_intern.frames_count = 0;
+  qjs_at_stream.native_cache_site = 0;
+  qjs_at_stream.native_cache_fp = 0;
+  qjs_at_stream.native_cache_js_depth = -1;
+  qjs_at_stream.native_cache_count = -1;
+  if (qjs_at_intern.intern) {
+    memset(qjs_at_intern.intern, 0, QJS_AT_INTERN_CAP * sizeof(*qjs_at_intern.intern));
   } else {
-    qjs_at_intern = (uint32_t *)calloc(QJS_AT_INTERN_CAP, sizeof(uint32_t));
+    qjs_at_intern.intern = (uint32_t *)calloc(QJS_AT_INTERN_CAP, sizeof(uint32_t));
   }
-  qjs_at_base = qjs_at_library_base();
-  qjs_at_out = fopen(path, "w");
-  if (qjs_at_out) {
-    setvbuf(qjs_at_out, NULL, _IOFBF, 1 << 20);
+  qjs_at_stream.base = qjs_at_library_base();
+  qjs_at_stream.out = fopen(path, "w");
+  if (qjs_at_stream.out) {
+    setvbuf(qjs_at_stream.out, NULL, _IOFBF, 1 << 20);
   }
   qjs_at_generation++;
-  qjs_at_enabled = qjs_at_out != NULL;
-  if (qjs_at_out) {
-    fprintf(qjs_at_out, "# qjs-alloc-trace v2 sample_rate=%u base=0x%llx\n",
-            qjs_at_sample_rate, (unsigned long long)qjs_at_base);
+  qjs_at_enabled = qjs_at_stream.out != NULL;
+  if (qjs_at_stream.out) {
+    fprintf(qjs_at_stream.out, "# qjs-alloc-trace v2 sample_rate=%u base=0x%llx\n",
+            qjs_at_sample_rate, (unsigned long long)qjs_at_stream.base);
   }
   qjs_at_mutex_unlock(&qjs_at_mutex);
-  return qjs_at_out ? 0 : -1;
+  return qjs_at_stream.out ? 0 : -1;
 }
 
 /* Writes a heap-snapshot marker ("H") into the stream; the live heap at each
@@ -242,9 +255,9 @@ int qjs_at_start(const char *path) {
    (alloc_trace_flamegraph.py --metric retained [--heap-at N]). */
 void qjs_at_dump_heap(void) {
   qjs_at_mutex_lock(&qjs_at_mutex);
-  if (qjs_at_out) {
-    fputs("H\n", qjs_at_out);
-    fflush(qjs_at_out);
+  if (qjs_at_stream.out) {
+    fputs("H\n", qjs_at_stream.out);
+    fflush(qjs_at_stream.out);
   }
   qjs_at_mutex_unlock(&qjs_at_mutex);
 }
@@ -252,20 +265,20 @@ void qjs_at_dump_heap(void) {
 void qjs_at_stop(void) {
   qjs_at_mutex_lock(&qjs_at_mutex);
   qjs_at_enabled = 0;
-  if (qjs_at_out) {
-    fprintf(qjs_at_out,
+  if (qjs_at_stream.out) {
+    fprintf(qjs_at_stream.out,
             "# totals allocs=%llu alloc_bytes=%llu frees=%llu free_bytes=%llu reallocs=%llu\n",
-            (unsigned long long)qjs_at_alloc_count,
-            (unsigned long long)qjs_at_alloc_bytes,
-            (unsigned long long)qjs_at_free_count,
-            (unsigned long long)qjs_at_free_bytes,
-            (unsigned long long)qjs_at_realloc_count);
-    fflush(qjs_at_out);
+            (unsigned long long)qjs_at_stream.alloc_count,
+            (unsigned long long)qjs_at_stream.alloc_bytes,
+            (unsigned long long)qjs_at_stream.free_count,
+            (unsigned long long)qjs_at_stream.free_bytes,
+            (unsigned long long)qjs_at_stream.realloc_count);
+    fflush(qjs_at_stream.out);
 #if QJS_AT_HAVE_UNWIND
-    fsync(fileno(qjs_at_out));
+    fsync(fileno(qjs_at_stream.out));
 #endif
-    fclose(qjs_at_out);
-    qjs_at_out = NULL;
+    fclose(qjs_at_stream.out);
+    qjs_at_stream.out = NULL;
   }
   qjs_at_mutex_unlock(&qjs_at_mutex);
 }
@@ -280,32 +293,32 @@ void qjs_at_commit(void) {
 
 /* Frame text is defined once as "D <id> ..."; pushes reference the id. */
 void qjs_at_stack_push(const QjsAtJsFrame *frame) {
-  if (qjs_at_out) {
+  if (qjs_at_stream.out) {
     uint32_t id = qjs_at_intern_frame(frame);
     if (id == UINT32_MAX) {
       return;
     }
-    if (id + 1 == qjs_at_frames_count) {
-      fprintf(qjs_at_out, "D %u ", id);
+    if (id + 1 == qjs_at_intern.frames_count) {
+      fprintf(qjs_at_stream.out, "D %u ", id);
       if (frame->is_native) {
-        fputs("<native>", qjs_at_out);
+        fputs("<native>", qjs_at_stream.out);
       } else {
-        qjs_at_print_name(qjs_at_out, frame->func_name[0] ? frame->func_name : "<anonymous>");
-        fputc('@', qjs_at_out);
-        qjs_at_print_name(qjs_at_out, frame->filename[0] ? frame->filename : "?");
+        qjs_at_print_name(qjs_at_stream.out, frame->func_name[0] ? frame->func_name : "<anonymous>");
+        fputc('@', qjs_at_stream.out);
+        qjs_at_print_name(qjs_at_stream.out, frame->filename[0] ? frame->filename : "?");
         if (frame->line_num) {
-          fprintf(qjs_at_out, ":%u", frame->line_num);
+          fprintf(qjs_at_stream.out, ":%u", frame->line_num);
         }
       }
-      fputc('\n', qjs_at_out);
+      fputc('\n', qjs_at_stream.out);
     }
-    fprintf(qjs_at_out, "+ %u\n", id);
+    fprintf(qjs_at_stream.out, "+ %u\n", id);
   }
 }
 
 void qjs_at_stack_pop(int n) {
-  if (qjs_at_out) {
-    fprintf(qjs_at_out, "- %d\n", n);
+  if (qjs_at_stream.out) {
+    fprintf(qjs_at_stream.out, "- %d\n", n);
   }
 }
 
@@ -315,41 +328,41 @@ void qjs_at_event(int kind, const void *ptr, const void *ptr2, size_t size,
   uintptr_t native_pcs[QJS_AT_MAX_NATIVE_FRAMES];
   int n_native;
 
-  if (!qjs_at_enabled || !qjs_at_out) {
+  if (!qjs_at_enabled || !qjs_at_stream.out) {
     return;
   }
   /* The stack of a free carries no information: the event is attributed to
      the allocation's stack when replaying the stream. */
   if (kind == QJS_AT_FREE) {
     n_native = 0;
-  } else if (site != 0 && site == qjs_at_native_cache_site &&
-             js_depth == qjs_at_native_cache_js_depth &&
-             fp == qjs_at_native_cache_fp) {
-    n_native = qjs_at_native_cache_count;
-    memcpy(native_pcs, qjs_at_native_cache, (size_t)n_native * sizeof(uintptr_t));
+  } else if (site != 0 && site == qjs_at_stream.native_cache_site &&
+             js_depth == qjs_at_stream.native_cache_js_depth &&
+             fp == qjs_at_stream.native_cache_fp) {
+    n_native = qjs_at_stream.native_cache_count;
+    memcpy(native_pcs, qjs_at_stream.native_cache, (size_t)n_native * sizeof(uintptr_t));
   } else {
     n_native = qjs_at_capture_native(native_pcs, QJS_AT_MAX_NATIVE_FRAMES);
-    memcpy(qjs_at_native_cache, native_pcs, (size_t)n_native * sizeof(uintptr_t));
-    qjs_at_native_cache_site = site;
-    qjs_at_native_cache_js_depth = js_depth;
-    qjs_at_native_cache_fp = fp;
-    qjs_at_native_cache_count = n_native;
+    memcpy(qjs_at_stream.native_cache, native_pcs, (size_t)n_native * sizeof(uintptr_t));
+    qjs_at_stream.native_cache_site = site;
+    qjs_at_stream.native_cache_js_depth = js_depth;
+    qjs_at_stream.native_cache_fp = fp;
+    qjs_at_stream.native_cache_count = n_native;
   }
 
   if (kind == QJS_AT_ALLOC) {
-    qjs_at_alloc_count++;
-    qjs_at_alloc_bytes += size;
-    fprintf(qjs_at_out, "A %p %llu native=", ptr, (unsigned long long)size);
-    qjs_at_print_native_stack(qjs_at_out, n_native, native_pcs);
-    fputc('\n', qjs_at_out);
+    qjs_at_stream.alloc_count++;
+    qjs_at_stream.alloc_bytes += size;
+    fprintf(qjs_at_stream.out, "A %p %llu native=", ptr, (unsigned long long)size);
+    qjs_at_print_native_stack(qjs_at_stream.out, n_native, native_pcs);
+    fputc('\n', qjs_at_stream.out);
   } else if (kind == QJS_AT_FREE) {
-    qjs_at_free_count++;
-    qjs_at_free_bytes += size;
-    fprintf(qjs_at_out, "F %p\n", ptr);
+    qjs_at_stream.free_count++;
+    qjs_at_stream.free_bytes += size;
+    fprintf(qjs_at_stream.out, "F %p\n", ptr);
   } else if (kind == QJS_AT_REALLOC) {
-    qjs_at_realloc_count++;
-    fprintf(qjs_at_out, "R %p %p %llu native=", ptr, ptr2, (unsigned long long)size);
-    qjs_at_print_native_stack(qjs_at_out, n_native, native_pcs);
-    fputc('\n', qjs_at_out);
+    qjs_at_stream.realloc_count++;
+    fprintf(qjs_at_stream.out, "R %p %p %llu native=", ptr, ptr2, (unsigned long long)size);
+    qjs_at_print_native_stack(qjs_at_stream.out, n_native, native_pcs);
+    fputc('\n', qjs_at_stream.out);
   }
 }

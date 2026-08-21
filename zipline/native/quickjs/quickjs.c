@@ -1657,8 +1657,6 @@ static void qjs_at_trace(JSMallocContext *s, int kind, const void *ptr,
             k++;
     }
 
-    qjs_at_event(kind, ptr, ptr2, size, site, n, fp);
-
     /* New innermost frames: cur_sf[n-k-1 .. 0], pushed outermost first. */
     qjs_at_begin();
     if (qjs_at_depth > k)
