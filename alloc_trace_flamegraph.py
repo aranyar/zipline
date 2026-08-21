@@ -270,23 +270,16 @@ def build_trie(buckets, min_bytes, native_names):
     return root, dropped
 
 
-def compute_max_depth(node):
-    if not node.children:
-        return 0
-    return 1 + max(compute_max_depth(c) for c in node.children.values())
-
-
 def emit_events(root):
-    """One X event per trie node.
+    """One X event per trie node, all on a single track (tid = 1).
 
-    tid = stack depth so trace viewers draw the events as a flamegraph;
-    sf references the stackFrames map so each slice also carries its full
-    call chain (rootmost parent -> ... -> this frame).
+    Parent durations cover their children, so the trace viewer stacks slices
+    by start/width itself; sf references the stackFrames map so each slice
+    also carries its full call chain (rootmost parent -> ... -> this frame).
     """
     events = []
     stack_frames = {}
     next_id = [0]
-    max_depth = compute_max_depth(root)
 
     def frame_id(node, parent_id):
         fid = str(next_id[0])
@@ -297,7 +290,7 @@ def emit_events(root):
         stack_frames[fid] = entry
         return fid
 
-    def emit(node, node_id, start, depth):
+    def emit(node, node_id, start):
         events.append({
             "name": node.name,
             "cat": "alloc",
@@ -305,32 +298,24 @@ def emit_events(root):
             "ts": start,
             "dur": node.weight,
             "pid": 1,
-            "tid": depth,
+            "tid": 1,
             "sf": node_id,
         })
         offset = start
         for child in sorted(node.children.values(), key=lambda c: -c.weight):
             cid = frame_id(child, node_id)
-            emit(child, cid, offset, depth + 1)
+            emit(child, cid, offset)
             offset += child.weight
 
     root_id = frame_id(root, None)
-    emit(root, root_id, 0, 0)
-    for depth in range(max_depth + 1):
-        events.append({
-            "name": "thread_name",
-            "ph": "M",
-            "pid": 1,
-            "tid": depth,
-            "args": {"name": "depth %d" % depth},
-        })
-        events.append({
-            "name": "thread_sort_index",
-            "ph": "M",
-            "pid": 1,
-            "tid": depth,
-            "args": {"sort_index": depth},
-        })
+    emit(root, root_id, 0)
+    events.append({
+        "name": "thread_name",
+        "ph": "M",
+        "pid": 1,
+        "tid": 1,
+        "args": {"name": "allocations"},
+    })
     events.append({
         "name": "process_name",
         "ph": "M",
