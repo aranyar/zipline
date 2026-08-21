@@ -20,13 +20,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if QJS_ALLOC_TRACE
 #if defined(_WIN32)
 #define QJS_AT_HAVE_UNWIND 0
-#elif QJS_ALLOC_TRACE
+#else
 #define QJS_AT_HAVE_UNWIND 1
 #include <dlfcn.h>
 #include <unistd.h>
 #include <unwind.h>
+#endif
 #else
 #define QJS_AT_HAVE_UNWIND 0
 #endif
@@ -39,6 +41,7 @@ void qjs_at_set_sample_rate(unsigned int rate) {
   qjs_at_sample_rate = rate == 0 ? 1 : rate;
 }
 
+#if QJS_ALLOC_TRACE
 static QjsAtMutex qjs_at_mutex = QJS_AT_MUTEX_INIT;
 
 /* Stream state + per-session counters + the last native unwind, reused while
@@ -176,6 +179,7 @@ static void qjs_at_print_native_stack(FILE *out, int n, const uintptr_t *pcs) {
     fprintf(out, "%llx", (unsigned long long)pcs[i]);
   }
 }
+
 
 static uint64_t qjs_at_fnv(const unsigned char *data, size_t len, uint64_t hash) {
   for (size_t i = 0; i < len; i++) {
@@ -368,3 +372,17 @@ void qjs_at_event(int kind, const void *ptr, const void *ptr2, size_t size,
     fputc('\n', qjs_at_stream.out);
   }
 }
+
+#else  /* !QJS_ALLOC_TRACE */
+
+/* Profiling disabled: no-op stubs so the JNI surface links and inits stay 0. */
+int qjs_at_start(const char *path) { return -1; }
+void qjs_at_stop(void) {}
+void qjs_at_dump_heap(void) {}
+void qjs_at_stack_push(const QjsAtJsFrame *frame) {}
+void qjs_at_stack_pop(int n) {}
+void qjs_at_event(int kind, const void *ptr, const void *ptr2, size_t size,
+                  uintptr_t site, int js_depth, uintptr_t fp) {}
+void qjs_at_begin(void) {}
+void qjs_at_commit(void) {}
+#endif
