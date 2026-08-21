@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <new>
+#include <thread>
 #ifdef __ANDROID__
 #include <android/log.h>
 #endif
@@ -20,10 +21,10 @@
 #define JSI_LOG_WARN(tag, ...) __android_log_print(ANDROID_LOG_WARN, tag, __VA_ARGS__)
 #define JSI_LOG_ERROR(tag, ...) __android_log_print(ANDROID_LOG_ERROR, tag, __VA_ARGS__)
 #else
-#define JSI_LOG_DEBUG(tag, ...) fprintf(stderr, "[JSI] " __VA_ARGS__); fflush(stderr)
-#define JSI_LOG_INFO(tag, ...) fprintf(stderr, "[JSI] " __VA_ARGS__); fflush(stderr)
-#define JSI_LOG_WARN(tag, ...) fprintf(stderr, "[JSI] " __VA_ARGS__); fflush(stderr)
-#define JSI_LOG_ERROR(tag, ...) fprintf(stderr, "[JSI] " __VA_ARGS__); fflush(stderr)
+#define JSI_LOG_DEBUG(tag, ...) do { fprintf(stderr, "[JSI][D/%s] ", tag); fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); fflush(stderr); } while (0)
+#define JSI_LOG_INFO(tag, ...) do { fprintf(stderr, "[JSI][I/%s] ", tag); fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); fflush(stderr); } while (0)
+#define JSI_LOG_WARN(tag, ...) do { fprintf(stderr, "[JSI][W/%s] ", tag); fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); fflush(stderr); } while (0)
+#define JSI_LOG_ERROR(tag, ...) do { fprintf(stderr, "[JSI][E/%s] ", tag); fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); fflush(stderr); } while (0)
 #endif
 
 namespace {
@@ -34,6 +35,19 @@ inline ContextJni* toContext(jlong p) {
 
 inline std::string jstringToCppString(JNIEnv* env, jstring javaString) {
   return zipline::jniStringToUtf8(env, javaString);
+}
+
+// Heap profiling entry points (startHeapSampling / stopHeapSampling /
+// dumpHeapSnapshot) mutate or walk the Hermes heap with no locking against
+// the JS thread, so they are only safe on the Zipline dispatcher thread —
+// the thread that created the engine. Warn when called from anywhere else.
+void warnIfOffJsThread(ContextJni* ctx, const char* fnName) {
+  if (ctx->jsThreadId != std::this_thread::get_id()) {
+    JSI_LOG_WARN("JsEngine",
+                 "%s called off the Zipline dispatcher thread; this races "
+                 "with JS execution and may crash or corrupt the profile",
+                 fnName);
+  }
 }
 
 }  // namespace
@@ -163,8 +177,17 @@ Java_app_cash_zipline_JsEngine_nativeStartHeapSampling(JNIEnv* env, jobject /*th
                        "JsEngine instance was closed");
     return;
   }
-  ctx->runtime->instrumentation().startHeapSampling(
-      static_cast<size_t>(samplingInterval));
+  warnIfOffJsThread(ctx, "startHeapSampling");
+  try {
+    ctx->runtime->instrumentation().startHeapSampling(
+        static_cast<size_t>(samplingInterval));
+    JSI_LOG_INFO("JsEngine", "Heap sampling started, interval=%lld bytes",
+                 static_cast<long long>(samplingInterval));
+  } catch (const std::exception& e) {
+    JSI_LOG_ERROR("JsEngine", "startHeapSampling failed: %s", e.what());
+    throwJavaException(env, "java/lang/IllegalStateException",
+                       "startHeapSampling failed: %s", e.what());
+  }
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -175,6 +198,7 @@ Java_app_cash_zipline_JsEngine_nativeStopHeapSampling(JNIEnv* env, jobject /*thi
                        "JsEngine instance was closed");
     return JNI_FALSE;
   }
+  warnIfOffJsThread(ctx, "stopHeapSampling");
   const char* pathChars = env->GetStringUTFChars(path, nullptr);
   if (!pathChars) {
     return JNI_FALSE;
@@ -186,9 +210,19 @@ Java_app_cash_zipline_JsEngine_nativeStopHeapSampling(JNIEnv* env, jobject /*thi
       ctx->runtime->instrumentation().stopHeapSampling(os);
       os.flush();
       ok = true;
+    } catch (const std::exception& e) {
+      JSI_LOG_ERROR("JsEngine", "stopHeapSampling to %s failed: %s",
+                    pathChars, e.what());
     } catch (...) {
-      ok = false;
+      JSI_LOG_ERROR("JsEngine", "stopHeapSampling to %s failed: unknown error",
+                    pathChars);
     }
+  } else {
+    JSI_LOG_ERROR("JsEngine", "stopHeapSampling: cannot open %s for writing",
+                  pathChars);
+  }
+  if (ok) {
+    JSI_LOG_INFO("JsEngine", "Heap sampling profile written to %s", pathChars);
   }
   env->ReleaseStringUTFChars(path, pathChars);
   return ok ? JNI_TRUE : JNI_FALSE;
@@ -202,17 +236,27 @@ Java_app_cash_zipline_JsEngine_nativeDumpHeapSnapshot(JNIEnv* env, jobject /*thi
                        "JsEngine instance was closed");
     return JNI_FALSE;
   }
+  warnIfOffJsThread(ctx, "dumpHeapSnapshot");
   const char* pathChars = env->GetStringUTFChars(path, nullptr);
   if (!pathChars) {
     return JNI_FALSE;
   }
   bool ok = false;
   try {
+    // Note: createSnapshotToFile forces a full GC and walks the whole heap;
+    // it blocks the JS thread for the duration.
     ctx->runtime->instrumentation().createSnapshotToFile(
         pathChars, ::facebook::jsi::Instrumentation::HeapSnapshotOptions{});
     ok = true;
+  } catch (const std::exception& e) {
+    JSI_LOG_ERROR("JsEngine", "dumpHeapSnapshot to %s failed: %s",
+                  pathChars, e.what());
   } catch (...) {
-    ok = false;
+    JSI_LOG_ERROR("JsEngine", "dumpHeapSnapshot to %s failed: unknown error",
+                  pathChars);
+  }
+  if (ok) {
+    JSI_LOG_INFO("JsEngine", "Heap snapshot written to %s", pathChars);
   }
   env->ReleaseStringUTFChars(path, pathChars);
   return ok ? JNI_TRUE : JNI_FALSE;
