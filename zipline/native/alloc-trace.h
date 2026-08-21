@@ -87,10 +87,14 @@ void qjs_at_stop(void);
    optionally --heap-at N). */
 void qjs_at_dump_heap(void);
 
-/* Called by the engine glue (quickjs.c) between qjs_at_begin/qjs_at_commit. */
+/* Called by the engine glue (quickjs.c) between qjs_at_begin/qjs_at_commit.
+   [site] is the allocator call site (the hook's return address, 0 for frees)
+   and [fp] the hook's frame pointer (a native stack depth proxy); the last
+   native unwind is reused while [site], [js_depth] and [fp] are unchanged. */
 void qjs_at_stack_push(const QjsAtJsFrame *frame);
 void qjs_at_stack_pop(int n);
-void qjs_at_event(int kind, const void *ptr, const void *ptr2, size_t size);
+void qjs_at_event(int kind, const void *ptr, const void *ptr2, size_t size,
+                  uintptr_t site, int js_depth, uintptr_t fp);
 
 /* Push/pop/event calls between begin/commit take the stream lock once per
    recorded event instead of once per line. */

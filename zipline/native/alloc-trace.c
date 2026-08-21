@@ -38,6 +38,14 @@ void qjs_at_set_sample_rate(unsigned int rate) {
 }
 
 static QjsAtMutex qjs_at_mutex = QJS_AT_MUTEX_INIT;
+
+/* Last native unwind; reused while the allocator call site and the JS stack
+   depth are unchanged (see qjs_at_event). */
+static uintptr_t qjs_at_native_cache[QJS_AT_MAX_NATIVE_FRAMES];
+static uintptr_t qjs_at_native_cache_site = 0;
+static uintptr_t qjs_at_native_cache_fp = 0;
+static int qjs_at_native_cache_js_depth = -1;
+static int qjs_at_native_cache_count = -1;
 static FILE *qjs_at_out = NULL;
 static uintptr_t qjs_at_base = 0;
 
@@ -174,6 +182,10 @@ int qjs_at_start(const char *path) {
   qjs_at_free_bytes = 0;
   qjs_at_realloc_count = 0;
   qjs_at_frames_count = 0;
+  qjs_at_native_cache_site = 0;
+  qjs_at_native_cache_fp = 0;
+  qjs_at_native_cache_js_depth = -1;
+  qjs_at_native_cache_count = -1;
   if (qjs_at_intern) {
     memset(qjs_at_intern, 0, QJS_AT_INTERN_CAP * sizeof(*qjs_at_intern));
   } else {
@@ -267,7 +279,8 @@ void qjs_at_stack_pop(int n) {
 }
 
 /* Must be called between qjs_at_begin/qjs_at_commit (lock held). */
-void qjs_at_event(int kind, const void *ptr, const void *ptr2, size_t size) {
+void qjs_at_event(int kind, const void *ptr, const void *ptr2, size_t size,
+                  uintptr_t site, int js_depth, uintptr_t fp) {
   uintptr_t native_pcs[QJS_AT_MAX_NATIVE_FRAMES];
   int n_native;
 
@@ -276,9 +289,21 @@ void qjs_at_event(int kind, const void *ptr, const void *ptr2, size_t size) {
   }
   /* The stack of a free carries no information: the event is attributed to
      the allocation's stack when replaying the stream. */
-  n_native = kind == QJS_AT_FREE
-      ? 0
-      : qjs_at_capture_native(native_pcs, QJS_AT_MAX_NATIVE_FRAMES);
+  if (kind == QJS_AT_FREE) {
+    n_native = 0;
+  } else if (site != 0 && site == qjs_at_native_cache_site &&
+             js_depth == qjs_at_native_cache_js_depth &&
+             fp == qjs_at_native_cache_fp) {
+    n_native = qjs_at_native_cache_count;
+    memcpy(native_pcs, qjs_at_native_cache, (size_t)n_native * sizeof(uintptr_t));
+  } else {
+    n_native = qjs_at_capture_native(native_pcs, QJS_AT_MAX_NATIVE_FRAMES);
+    memcpy(qjs_at_native_cache, native_pcs, (size_t)n_native * sizeof(uintptr_t));
+    qjs_at_native_cache_site = site;
+    qjs_at_native_cache_js_depth = js_depth;
+    qjs_at_native_cache_fp = fp;
+    qjs_at_native_cache_count = n_native;
+  }
 
   if (kind == QJS_AT_ALLOC) {
     qjs_at_alloc_count++;

@@ -1614,7 +1614,7 @@ static void qjs_at_convert_frame(JSRuntime *rt, JSStackFrame *sf,
 }
 
 static void qjs_at_trace(JSMallocContext *s, int kind, const void *ptr,
-                         const void *ptr2, size_t size)
+                         const void *ptr2, size_t size, uintptr_t site, uintptr_t fp)
 {
     /* malloc_ctx is the first member of JSRuntime */
     JSRuntime *rt = (JSRuntime *)s;
@@ -1657,6 +1657,8 @@ static void qjs_at_trace(JSMallocContext *s, int kind, const void *ptr,
             k++;
     }
 
+    qjs_at_event(kind, ptr, ptr2, size, site, n, fp);
+
     /* New innermost frames: cur_sf[n-k-1 .. 0], pushed outermost first. */
     qjs_at_begin();
     if (qjs_at_depth > k)
@@ -1670,7 +1672,7 @@ static void qjs_at_trace(JSMallocContext *s, int kind, const void *ptr,
     memcpy(qjs_at_stack_func, cur_func, (size_t)n * sizeof(*cur_func));
     qjs_at_depth = n;
 
-    qjs_at_event(kind, ptr, ptr2, size);
+    qjs_at_event(kind, ptr, ptr2, size, site, n, fp);
     qjs_at_commit();
 }
 #endif /* QJS_ALLOC_TRACE */
@@ -1716,14 +1718,14 @@ static void *__js_malloc(JSMallocContext *s, size_t size)
 #endif
 #ifdef QJS_ALLOC_TRACE
             if (qjs_at_enabled && qjs_at_sample())
-                qjs_at_trace(s, QJS_AT_ALLOC, b->user_data, NULL, size);
+                qjs_at_trace(s, QJS_AT_ALLOC, b->user_data, NULL, size, (uintptr_t)__builtin_return_address(0), (uintptr_t)__builtin_frame_address(0));
 #endif
             return b->user_data;
         } else {
 #ifdef QJS_ALLOC_TRACE
             void *ptr = js_malloc_large(s, size);
             if (qjs_at_enabled && ptr && qjs_at_sample())
-                qjs_at_trace(s, QJS_AT_ALLOC, ptr, NULL, size);
+                qjs_at_trace(s, QJS_AT_ALLOC, ptr, NULL, size, (uintptr_t)__builtin_return_address(0), (uintptr_t)__builtin_frame_address(0));
             return ptr;
 #else
             return js_malloc_large(s, size);
@@ -1758,7 +1760,7 @@ static void __js_free(JSMallocContext *s, void *ptr)
                     else
                         fsize = 0;
                 }
-                qjs_at_trace(s, QJS_AT_FREE, ptr, NULL, fsize);
+                qjs_at_trace(s, QJS_AT_FREE, ptr, NULL, fsize, 0, 0);
             }
 #endif
             s->mf.js_free(&s->malloc_state, lb);
@@ -1770,7 +1772,7 @@ static void __js_free(JSMallocContext *s, void *ptr)
         JSMallocArena *ar = (JSMallocArena *)((uint8_t *)b - block_size * block_idx - sizeof(JSMallocArena));
 #ifdef QJS_ALLOC_TRACE
         if (qjs_at_enabled && qjs_at_sample())
-            qjs_at_trace(s, QJS_AT_FREE, ptr, NULL, block_size - sizeof(JSMallocBlockHeader));
+            qjs_at_trace(s, QJS_AT_FREE, ptr, NULL, block_size - sizeof(JSMallocBlockHeader), 0, 0);
 #endif
         b->u.free_next = ar->first_free_block;
         ar->first_free_block = block_idx;
@@ -1824,7 +1826,7 @@ static void *__js_realloc(JSMallocContext *s, void *ptr, size_t size)
 #endif
 #ifdef QJS_ALLOC_TRACE
             if (qjs_at_enabled && qjs_at_sample())
-                qjs_at_trace(s, QJS_AT_REALLOC, new_lb->header.user_data, ptr, size);
+                qjs_at_trace(s, QJS_AT_REALLOC, new_lb->header.user_data, ptr, size, (uintptr_t)__builtin_return_address(0), (uintptr_t)__builtin_frame_address(0));
 #endif
             return new_lb->header.user_data;
         }
