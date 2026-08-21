@@ -42,6 +42,7 @@ fn setupTarget(b: *std.Build, tag: std.Target.Os.Tag, arch: std.Target.Cpu.Arch,
 
   lib.root_module.addCSourceFiles(.{
     .files = &.{
+      "native/alloc-trace.c",
       "native/common/context-no-eval.c",
       "native/common/finalization-registry.c",
       "native/common/global-gc.c",
@@ -54,6 +55,8 @@ fn setupTarget(b: *std.Build, tag: std.Target.Os.Tag, arch: std.Target.Cpu.Arch,
     },
     .flags = &.{
       "-std=gnu99",
+      // glibc declares dladdr/Dl_info (used by alloc-trace.c) only under _GNU_SOURCE.
+      "-D_GNU_SOURCE",
     },
   });
 
