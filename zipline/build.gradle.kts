@@ -50,6 +50,13 @@ dependencies {
   add(NATIVE_COMPILER_PLUGIN_CLASSPATH_CONFIGURATION_NAME, projects.ziplineKotlinPlugin)
 }
 
+// Lean (no JIT/parser, ~1MB smaller per ABI) is the default for Android.
+// Pass -PhermesProd=false for the full engine: required for CDP debugging
+// (Runtime.evaluate / evaluateOnCallFrame compile JS at runtime) and CPU /
+// heap profiling (HermesCore_makeRuntimeConfig enables the sampling
+// profilers only in non-lean builds).
+val hermesProd = providers.gradleProperty("hermesProd").orNull?.toBooleanStrictOrNull() ?: true
+
 kotlin {
   androidTarget {
     // Substitute release AAR with debug AAR when the
@@ -267,9 +274,10 @@ fun jsEngineVersion(): String {
 }
 
 fun hermesLibraryName(): String {
-  // Lean mode is always enabled for Maven publish builds. This excludes
-  // JIT/parser for smaller APKs; compile() will throw UnsupportedOperationException.
-  return "hermesvmlean"
+  // Lean mode is the default for Maven publish builds (-PhermesProd=true).
+  // It excludes JIT/parser for smaller APKs; compile() will throw
+  // UnsupportedOperationException. -PhermesProd=false packages the full VM.
+  return if (hermesProd) "hermesvmlean" else "hermesvm"
 }
 
 // -----------------------------------------------------------------------------
@@ -735,6 +743,10 @@ android {
     // adds our glue on top and links the whole thing into a single .so.
     externalNativeBuild {
       cmake {
+        // Build only the engine variant we package (lean by default, full
+        // VM via -PhermesProd=false); the other variant's .so would
+        // otherwise be built and packaged too.
+        targets(if (hermesProd) "hermesvmlean" else "hermesvm")
         arguments(
           "-DANDROID_TOOLCHAIN=clang",
           "-DANDROID_STL=c++_shared",
@@ -744,9 +756,11 @@ android {
           // Pass JAVA_HOME for the JNI include path (on non-Apple; on Android
           // the NDK toolchain's sysroot include dir already has jni.h).
           "-DJAVA_HOME=${javaHome ?: ""}",
-          // Build lean Hermes (no JIT compiler, ~800KB smaller per ABI).
-          // The compile() JNI method will throw UnsupportedOperationException.
-          "-DHERMESVM_LEAN=TRUE",
+          // Lean Hermes (no JIT compiler, ~800KB smaller per ABI) is the
+          // default; -PhermesProd=false builds the full VM. In lean builds
+          // the compile() JNI method will throw UnsupportedOperationException.
+          // Pass explicitly: the CMake cache from older builds sticks otherwise.
+          "-DHERMESVM_LEAN=${if (hermesProd) "TRUE" else "FALSE"}",
         )
         cFlags("-fstrict-aliasing", "-DCONFIG_VERSION=\\\"${jsEngineVersion()}\\\"")
         cppFlags("-fstrict-aliasing", "-DCONFIG_VERSION=\\\"${jsEngineVersion()}\\\"")
@@ -767,7 +781,7 @@ android {
       jniLibs.keepDebugSymbols += "**/libzipline_jsengine_jni.so"
       // Also keep debug symbols for the Hermes VM itself so we can debug
       // runtime crashes in the VM code (e.g., in evaluatePreparedJavaScript).
-      jniLibs.keepDebugSymbols += "**/libhermesvmlean.so"
+      jniLibs.keepDebugSymbols += "**/lib${hermesLibraryName()}.so"
 
       // fbjni is required by Hermes Android CMakeLists when
       // HERMES_ENABLE_INTL=TRUE. We disable INTL so the linker never

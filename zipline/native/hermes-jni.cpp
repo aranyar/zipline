@@ -1,5 +1,6 @@
 #include <jni.h>
 #include <cstdlib>
+#include <fstream>
 #include <new>
 #ifdef __ANDROID__
 #include <android/log.h>
@@ -9,6 +10,8 @@
 #include "JniUtf8.h"
 #include "ExceptionThrowers.h"
 #include "InboundCallChannel.h"
+#include <hermes/hermes.h>
+#include <jsi/hermes-interfaces.h>
 
 // Android log macros - available to all functions in this file
 #ifdef __ANDROID__
@@ -136,6 +139,97 @@ Java_app_cash_zipline_JsEngine_gc(JNIEnv* env, jobject /*thiz*/, jlong _context)
     return;
   }
   ctx->gc(env);
+}
+
+namespace {
+
+// Casts the engine's jsi::Runtime to the Hermes-specific IHermes interface.
+// Returns nullptr (after throwing) when the runtime is not Hermes.
+facebook::hermes::IHermes* toHermes(JNIEnv* env, ContextJni* ctx) {
+  auto* ih = facebook::jsi::castInterface<facebook::hermes::IHermes>(
+      ctx->runtime.get());
+  if (!ih) {
+    throwJavaException(env, "java/lang/IllegalStateException",
+                       "CPU sampling requires a Hermes runtime");
+  }
+  return ih;
+}
+
+}  // namespace
+
+extern "C" JNIEXPORT void JNICALL
+Java_app_cash_zipline_JsEngine_nativeStartCpuSampling(JNIEnv* env, jobject /*thiz*/, jlong _context, jdouble meanHzFreq) {
+  ContextJni* ctx = toContext(_context);
+  if (!ctx) {
+    throwJavaException(env, "java/lang/IllegalStateException",
+                       "JsEngine instance was closed");
+    return;
+  }
+  facebook::hermes::IHermes* ih = toHermes(env, ctx);
+  if (!ih) {
+    return;
+  }
+  try {
+    auto* rootApi = facebook::jsi::castInterface<facebook::hermes::IHermesRootAPI>(
+        ih->getHermesRootAPI());
+    rootApi->enableSamplingProfiler(static_cast<double>(meanHzFreq));
+    JSI_LOG_INFO("JsEngine", "CPU sampling started, mean freq=%.1f Hz",
+                 static_cast<double>(meanHzFreq));
+  } catch (const std::exception& e) {
+    // Lean (prod) builds don't register the runtime for profiling.
+    JSI_LOG_ERROR("JsEngine", "startCpuSampling failed: %s", e.what());
+    throwJavaException(env, "java/lang/IllegalStateException",
+                       "startCpuSampling failed: %s", e.what());
+  }
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_app_cash_zipline_JsEngine_nativeStopCpuSampling(JNIEnv* env, jobject /*thiz*/, jlong _context, jstring path) {
+  ContextJni* ctx = toContext(_context);
+  if (!ctx) {
+    throwJavaException(env, "java/lang/IllegalStateException",
+                       "JsEngine instance was closed");
+    return JNI_FALSE;
+  }
+  facebook::hermes::IHermes* ih = toHermes(env, ctx);
+  if (!ih) {
+    return JNI_FALSE;
+  }
+  const char* pathChars = env->GetStringUTFChars(path, nullptr);
+  if (!pathChars) {
+    return JNI_FALSE;
+  }
+  std::ofstream os(pathChars, std::ios::binary | std::ios::trunc);
+  bool ok = false;
+  if (os) {
+    try {
+      auto* rootApi =
+          facebook::jsi::castInterface<facebook::hermes::IHermesRootAPI>(
+              ih->getHermesRootAPI());
+      // Stop first so the sampler thread is not running while we dump
+      // (dumping also clears the recorded samples).
+      rootApi->disableSamplingProfiler();
+      // Chrome trace-event JSON: open in chrome://tracing, ui.perfetto.dev
+      // or DevTools Performance -> Load profile.
+      ih->sampledTraceToStreamInDevToolsFormat(os);
+      os.flush();
+      ok = true;
+    } catch (const std::exception& e) {
+      JSI_LOG_ERROR("JsEngine", "stopCpuSampling to %s failed: %s",
+                    pathChars, e.what());
+    } catch (...) {
+      JSI_LOG_ERROR("JsEngine", "stopCpuSampling to %s failed: unknown error",
+                    pathChars);
+    }
+  } else {
+    JSI_LOG_ERROR("JsEngine", "stopCpuSampling: cannot open %s for writing",
+                  pathChars);
+  }
+  if (ok) {
+    JSI_LOG_INFO("JsEngine", "CPU profile written to %s", pathChars);
+  }
+  env->ReleaseStringUTFChars(path, pathChars);
+  return ok ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jstring JNICALL

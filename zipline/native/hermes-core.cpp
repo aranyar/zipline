@@ -31,6 +31,15 @@ hermes::vm::RuntimeConfig HermesCore_makeRuntimeConfig() {
   return facebook::hermes::hardenedHermesRuntimeConfig().rebuild()
       .withES6Proxy(true)
       .withGCConfig(HermesCore_makeGCConfig())
+#ifdef HERMESVM_LEAN
+      // Prod (lean) builds ship no profiling support.
+      .withEnableSampleProfiling(false)
+#else
+      // Non-prod builds register the runtime with the Hermes sampling
+      // profiler so CPU sampling (JsEngine.startCpuSampling) can attach.
+      // Overhead while not sampling is negligible (root marking only).
+      .withEnableSampleProfiling(true)
+#endif
       .build();
 }
 

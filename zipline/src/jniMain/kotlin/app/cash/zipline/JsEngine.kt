@@ -116,6 +116,28 @@ actual class JsEngine private constructor(
   }
 
   /**
+   * Starts Hermes' CPU sampling profiler. Must be called on the Zipline
+   * dispatcher thread (the same thread that runs JS in this engine).
+   * [meanHzFreq] is the mean sampling frequency in Hz (default 100).
+   *
+   * Only available in non-prod builds (-PhermesProd=false); prod builds
+   * don't register the runtime with the sampling profiler and this throws
+   * [IllegalStateException].
+   */
+  fun startCpuSampling(meanHzFreq: Double = 100.0) {
+    nativeStartCpuSampling(context, meanHzFreq)
+  }
+
+  /**
+   * Stops sampling and writes a Chrome trace-event JSON profile to [path]
+   * (open in chrome://tracing, ui.perfetto.dev or DevTools Performance →
+   * Load profile). Must be called on the Zipline dispatcher thread.
+   * Returns false on IO failure or when profiling is unavailable.
+   */
+  fun stopCpuSampling(path: String): Boolean =
+    nativeStopCpuSampling(context, path)
+
+  /**
    * Compile [sourceCode] and return the bytecode. [fileName] will be used in error
    * reporting. [sourceMap] is optional to enable Kotlin stacktraces.
    *
@@ -184,6 +206,8 @@ actual class JsEngine private constructor(
   private external fun compile(context: Long, sourceCode: String, fileName: String, sourceMap: String?): ByteArray
   private external fun memoryUsage(context: Long): MemoryUsage?
   private external fun gc(context: Long)
+  private external fun nativeStartCpuSampling(context: Long, meanHzFreq: Double)
+  private external fun nativeStopCpuSampling(context: Long, path: String): Boolean
   private external fun getGlobalProperty(context: Long, name: String): String?
   private external fun setGlobalProperty(context: Long, name: String, value: String)
   private external fun deleteGlobalProperty(context: Long, name: String)
