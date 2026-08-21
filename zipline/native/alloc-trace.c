@@ -22,11 +22,13 @@
 
 #if defined(_WIN32)
 #define QJS_AT_HAVE_UNWIND 0
-#else
+#elif QJS_ALLOC_TRACE
 #define QJS_AT_HAVE_UNWIND 1
 #include <dlfcn.h>
 #include <unistd.h>
 #include <unwind.h>
+#else
+#define QJS_AT_HAVE_UNWIND 0
 #endif
 
 volatile int qjs_at_enabled = 0;
@@ -99,7 +101,7 @@ static _Unwind_Reason_Code qjs_at_unwind_callback(struct _Unwind_Context *contex
 #endif
 
 static uintptr_t qjs_at_library_base(void) {
-#if QJS_AT_HAVE_UNWIND
+#if QJS_AT_HAVE_UNWIND && QJS_ALLOC_TRACE
   Dl_info info;
   if (dladdr((void *)&qjs_at_library_base, &info) && info.dli_fbase) {
     return (uintptr_t)info.dli_fbase;
