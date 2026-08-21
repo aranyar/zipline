@@ -1574,20 +1574,15 @@ static void qjs_at_copy_atom(JSRuntime *rt, JSAtom atom, char *dst, int dst_size
     dst[len] = '\0';
 }
 
-#define QJS_AT_CACHE_SHIFT 2
-#define QJS_AT_CACHE_PROBE 6
-
-typedef struct {
-    JSRuntime *rt;
-    int count; /* -1 = invalid */
-    JSStackFrame *sf[QJS_AT_MAX_JS_FRAMES];
-    JSValue func[QJS_AT_MAX_JS_FRAMES];
-    QjsAtJsFrame frames[QJS_AT_MAX_JS_FRAMES];
-} QjsAtStackCache;
-
 /* Interpreters are confined to one thread, so a thread-local cache is safe.
-   Cached pointers are only ever compared, never dereferenced. */
-static __thread QjsAtStackCache qjs_at_cache = { NULL, -1 };
+   Only frame pointers are cached and compared, never dereferenced. The JS
+   stack is streamed to the trace file as push/pop events (see
+   qjs_at_stack_push/pop); generation resyncs the cache on session start. */
+static __thread JSStackFrame *qjs_at_stack[QJS_AT_MAX_JS_FRAMES];
+static __thread JSValue qjs_at_stack_func[QJS_AT_MAX_JS_FRAMES];
+static __thread int qjs_at_depth = -1;
+static __thread JSRuntime *qjs_at_stack_rt = NULL;
+static __thread unsigned int qjs_at_tls_gen = 0;
 
 static void qjs_at_convert_frame(JSRuntime *rt, JSStackFrame *sf,
                                  QjsAtJsFrame *out)
@@ -1618,97 +1613,65 @@ static void qjs_at_convert_frame(JSRuntime *rt, JSStackFrame *sf,
     }
 }
 
-static int qjs_at_frames_equal(JSStackFrame *sf1, JSValue f1,
-                               JSStackFrame *sf2, JSValue f2)
-{
-    return sf1 == sf2 && !memcmp(&f1, &f2, sizeof(JSValue));
-}
-
 static void qjs_at_trace(JSMallocContext *s, int kind, const void *ptr,
                          const void *ptr2, size_t size)
 {
     /* malloc_ctx is the first member of JSRuntime */
     JSRuntime *rt = (JSRuntime *)s;
     JSStackFrame *sf;
-    QjsAtJsFrame frames[QJS_AT_MAX_JS_FRAMES];
-    QjsAtStackCache *cache = &qjs_at_cache;
+    JSStackFrame *cur_sf[QJS_AT_MAX_JS_FRAMES];
+    JSValue cur_func[QJS_AT_MAX_JS_FRAMES];
+    QjsAtJsFrame frame;
     int n = 0;
+    int k = 0;
+    int i;
 
-    if (cache->rt != rt)
-        cache->count = -1;
+    if (!qjs_at_enabled)
+        return;
 
-    if (cache->count >= 0) {
-        JSStackFrame *probe_sf[QJS_AT_CACHE_SHIFT + QJS_AT_CACHE_PROBE];
-        JSValue probe_func[QJS_AT_CACHE_SHIFT + QJS_AT_CACHE_PROBE];
-        int pn = 0;
-        int shift;
-        int matched = 0;
-
-        for (sf = rt->current_stack_frame;
-             sf && pn < QJS_AT_CACHE_SHIFT + QJS_AT_CACHE_PROBE;
-             sf = sf->prev_frame) {
-            if (sf->js_mode & JS_MODE_BACKTRACE_BARRIER)
-                break;
-            probe_sf[pn] = sf;
-            probe_func[pn] = sf->cur_func;
-            pn++;
-        }
-        for (shift = -QJS_AT_CACHE_SHIFT; shift <= QJS_AT_CACHE_SHIFT; shift++) {
-            int cur_off = shift > 0 ? shift : 0;
-            int cache_off = shift > 0 ? 0 : -shift;
-            int j;
-            if (pn - cur_off < QJS_AT_CACHE_PROBE ||
-                cache->count - cache_off < QJS_AT_CACHE_PROBE)
-                continue;
-            for (j = 0; j < QJS_AT_CACHE_PROBE; j++) {
-                if (!qjs_at_frames_equal(probe_sf[cur_off + j],
-                                         probe_func[cur_off + j],
-                                         cache->sf[cache_off + j],
-                                         cache->func[cache_off + j]))
-                    break;
-            }
-            if (j < QJS_AT_CACHE_PROBE)
-                continue;
-            /* tails coincide: reuse the cached converted frames */
-            if (shift > 0) {
-                int i;
-                for (i = 0; i < shift; i++)
-                    qjs_at_convert_frame(rt, probe_sf[i], &frames[i]);
-                n = shift + cache->count;
-                if (n > QJS_AT_MAX_JS_FRAMES)
-                    n = QJS_AT_MAX_JS_FRAMES;
-                for (j = 0; shift + j < n; j++)
-                    frames[shift + j] = cache->frames[j];
-            } else {
-                n = cache->count - cache_off;
-                for (j = 0; j < n; j++)
-                    frames[j] = cache->frames[cache_off + j];
-            }
-            matched = 1;
-            break;
-        }
-        if (matched) {
-            qjs_at_record(kind, ptr, ptr2, size, frames, n);
-            return;
-        }
-    }
-
-    memset(frames, 0, sizeof(frames));
     for (sf = rt->current_stack_frame; sf && n < QJS_AT_MAX_JS_FRAMES;
          sf = sf->prev_frame) {
         if (sf->js_mode & JS_MODE_BACKTRACE_BARRIER)
             break;
-        qjs_at_convert_frame(rt, sf, &frames[n]);
-        cache->sf[n] = sf;
-        cache->func[n] = sf->cur_func;
+        cur_sf[n] = sf;
+        cur_func[n] = sf->cur_func;
         n++;
     }
-    cache->rt = rt;
-    cache->count = n;
-    for (int i = 0; i < n; i++) {
-        cache->frames[i] = frames[i];
+
+    if (qjs_at_tls_gen != qjs_at_generation || rt != qjs_at_stack_rt) {
+        qjs_at_tls_gen = qjs_at_generation;
+        qjs_at_stack_rt = rt;
+        qjs_at_depth = -1;
     }
-    qjs_at_record(kind, ptr, ptr2, size, frames, n);
+
+    /* Chains are innermost-first; shared outer frames form the longest
+       common suffix. cur_func is compared too: QuickJS reuses freed
+       JSStackFrame memory, so a bare pointer match does not prove the
+       frame is the same invocation. */
+    if (qjs_at_depth >= 0) {
+        int max = qjs_at_depth < n ? qjs_at_depth : n;
+        while (k < max &&
+               qjs_at_stack[qjs_at_depth - 1 - k] == cur_sf[n - 1 - k] &&
+               !memcmp(&qjs_at_stack_func[qjs_at_depth - 1 - k],
+                       &cur_func[n - 1 - k], sizeof(JSValue)))
+            k++;
+    }
+
+    /* New innermost frames: cur_sf[n-k-1 .. 0], pushed outermost first. */
+    qjs_at_begin();
+    if (qjs_at_depth > k)
+        qjs_at_stack_pop(qjs_at_depth - k);
+    for (i = n - k - 1; i >= 0; i--) {
+        qjs_at_convert_frame(rt, cur_sf[i], &frame);
+        qjs_at_stack_push(&frame);
+    }
+
+    memcpy(qjs_at_stack, cur_sf, (size_t)n * sizeof(*cur_sf));
+    memcpy(qjs_at_stack_func, cur_func, (size_t)n * sizeof(*cur_func));
+    qjs_at_depth = n;
+
+    qjs_at_event(kind, ptr, ptr2, size);
+    qjs_at_commit();
 }
 #endif /* QJS_ALLOC_TRACE */
 

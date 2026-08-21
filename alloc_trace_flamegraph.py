@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Convert a qjs-alloc-trace aggregate dump to Chrome Trace Event format flamegraph JSON.
+"""Convert a qjs-alloc-trace dump to Chrome Trace Event format flamegraph JSON.
+
+Input is a v2 event stream produced by QuickJs.startAllocTracing(path)
+(A/F/R events with native stacks, '+'/'-' JS stack push/pop markers);
+v1 aggregate dumps (S lines) are also accepted. The JS stack and the live
+heap are reconstructed by replaying the stream, so the live set is simply
+the retained metric; `H` lines written by QuickJs.dumpAllocHeap() mark heap
+snapshot points (see --heap-at).
 
 The X axis represents memory (bytes), not time: each bucket's weight
 (alloc_bytes by default) becomes the width of its frames. Every stack depth
@@ -7,10 +14,22 @@ is emitted on its own "thread" (lane), so chrome://tracing or Perfetto renders
 it as a flamegraph.
 
 Usage:
-  python3 alloc_trace_flamegraph.py alloc_trace.txt -o flame.json
-  python3 alloc_trace_flamegraph.py alloc_trace.txt --metric free --min-bytes 100000
-  python3 alloc_trace_flamegraph.py alloc_trace.txt --native /path/to/libquickjs.so \
-      --symbolizer ~/Library/Android/sdk/ndk/*/toolchains/llvm/prebuilt/*/bin/llvm-symbolizer
+  # Pull a stream from the device
+  adb exec-out "cat /sdcard/Android/data/<app-id>/files/alloc_trace.txt" > alloc_trace.txt
+
+  # Live heap flamegraph + top allocation sites
+  python3 alloc_trace_flamegraph.py alloc_trace.txt --metric retained --top 15 -o flame.json
+
+  # Symbolized native frames (use the unstripped .so matching the device ABI)
+  python3 alloc_trace_flamegraph.py alloc_trace.txt --metric retained \
+      --native /path/to/libquickjs.so \
+      --symbolizer ~/Library/Android/sdk/ndk/*/toolchains/llvm/prebuilt/*/bin/llvm-symbolizer \
+      -o flame.json
+
+  # Live heap at the Nth dumpAllocHeap() marker (default: whole stream)
+  python3 alloc_trace_flamegraph.py alloc_trace.txt --metric retained --heap-at 1 -o heap.json
+
+  # Growth between two streams
   python3 alloc_trace_flamegraph.py --diff dump1.txt dump2.txt -o diff.json
 """
 
@@ -36,41 +55,148 @@ class Node:
         self.children = {}
 
 
-def parse_buckets(path, metric):
+V2_HEADER_PREFIX = "# qjs-alloc-trace v2 "
+V2_ALLOC_RE = re.compile(r"^A (\S+) (\d+) native=(\S*)$")
+V2_FREE_RE = re.compile(r"^F (\S+)$")
+V2_REALLOC_RE = re.compile(r"^R (\S+) (\S+) (\d+) native=(\S*)$")
+V2_POP_RE = re.compile(r"^- (\d+)$")
+V2_FRAME_DEF_RE = re.compile(r"^D (\d+) (.*)$")
+V2_PUSH_RE = re.compile(r"^\+ (\d+)$")
+
+
+def replay_stream(lines, metric, heap_at=0):
+    """Replay a v2 event stream into per-stack buckets.
+
+    The JS stack is implicit in the stream: `+ frame` pushes, `- n` pops.
+    Allocation events inherit the stack at their position; frees/reallocs
+    resolve through the live pointer map. `H` lines are heap-snapshot
+    markers: with heap_at=N, only events up to the Nth marker are replayed.
+    """
+    if heap_at > 0:
+        seen = 0
+        cut = len(lines)
+        for i, line in enumerate(lines):
+            if line.rstrip() == "H":
+                seen += 1
+                if seen == heap_at:
+                    cut = i
+                    break
+        lines = lines[:cut]
+
+    stack = []
+    frame_names = {}
+    ptr_map = {}
+    stats = {}
+
+    def record_alloc(ptr, size, native):
+        # The push sequence already yields the stack root-first; bucket frames
+        # follow the v1 convention (root-first).
+        frames = tuple(stack) if stack else ("<no js stack>",)
+        key = (frames, native)
+        s = stats.setdefault(key, [0, 0, 0, 0])
+        s[0] += 1
+        s[1] += size
+        ptr_map[ptr] = (key, size)
+
+    def record_free(ptr):
+        entry = ptr_map.pop(ptr, None)
+        if entry is None:
+            return
+        key, size = entry
+        stats[key][2] += 1
+        stats[key][3] += size
+
+    for line in lines:
+        if line.startswith("D "):
+            m = V2_FRAME_DEF_RE.match(line)
+            if m:
+                frame_names[int(m.group(1))] = m.group(2).rstrip("\n")
+            continue
+        if line.startswith("+ "):
+            m = V2_PUSH_RE.match(line)
+            if m:
+                stack.append(frame_names.get(int(m.group(1)), "?"))
+            continue
+        if line.startswith("- "):
+            m = V2_POP_RE.match(line)
+            if m:
+                n = int(m.group(1))
+                if n >= len(stack):
+                    stack.clear()
+                else:
+                    del stack[-n:]
+            continue
+        m = V2_ALLOC_RE.match(line)
+        if m:
+            ptr, size, native = m.groups()
+            record_alloc(ptr, int(size), native)
+            continue
+        m = V2_FREE_RE.match(line)
+        if m:
+            record_free(m.group(1))
+            continue
+        m = V2_REALLOC_RE.match(line)
+        if m:
+            new_ptr, old_ptr, size, native = m.groups()
+            record_free(old_ptr)
+            record_alloc(new_ptr, int(size), native)
+
+    buckets = []
+    for (frames, native), (allocs, alloc_bytes, frees, free_bytes) in stats.items():
+        if metric == "alloc":
+            weight = alloc_bytes
+        elif metric == "free":
+            weight = free_bytes
+        else:  # retained
+            weight = alloc_bytes - free_bytes
+        buckets.append((weight, list(frames), [a for a in native.split(",") if a]))
+    return buckets
+
+
+def parse_buckets(path, metric, heap_at=0):
     buckets = []
     header = {}
     with open(path, "r", encoding="utf-8", errors="replace") as f:
-        for line in f:
+        lines = f.readlines()
+    if any(line.startswith(V2_HEADER_PREFIX) for line in lines[:5]):
+        for line in lines:
             if line.startswith("#"):
                 hm = re.match(r"^# (\w+)=(.*)", line)
                 if hm:
                     header[hm.group(1)] = hm.group(2)
-                continue
-            m = LINE_RE.match(line)
-            if not m:
-                continue
-            allocs, alloc_bytes, frees, free_bytes, _reallocs, js, native = m.groups()
-            alloc_bytes = int(alloc_bytes)
-            free_bytes = int(free_bytes)
-            if metric == "alloc":
-                weight = alloc_bytes
-            elif metric == "free":
-                weight = free_bytes
-            else:  # retained
-                weight = alloc_bytes - free_bytes
-            frames = [f for f in js.split(";") if f]
-            if not frames:
-                frames = ["<no js stack>"]
-            # dump order is innermost-first; flamegraph wants root-first
-            frames.reverse()
-            buckets.append((weight, frames, native.split(",") if native else []))
+        return replay_stream(lines, metric, heap_at), header
+    for line in lines:
+        if line.startswith("#"):
+            hm = re.match(r"^# (\w+)=(.*)", line)
+            if hm:
+                header[hm.group(1)] = hm.group(2)
+            continue
+        m = LINE_RE.match(line)
+        if not m:
+            continue
+        allocs, alloc_bytes, frees, free_bytes, _reallocs, js, native = m.groups()
+        alloc_bytes = int(alloc_bytes)
+        free_bytes = int(free_bytes)
+        if metric == "alloc":
+            weight = alloc_bytes
+        elif metric == "free":
+            weight = free_bytes
+        else:  # retained
+            weight = alloc_bytes - free_bytes
+        frames = [f for f in js.split(";") if f]
+        if not frames:
+            frames = ["<no js stack>"]
+        # dump order is innermost-first; flamegraph wants root-first
+        frames.reverse()
+        buckets.append((weight, frames, native.split(",") if native else []))
     return buckets, header
 
 
 # Allocator frames between the traced call site and the allocation itself;
 # skipped when grouping buckets by allocation site for --top.
 ALLOC_PREAMBLE = frozenset({
-    "qjs_at_record", "qjs_at_trace", "__js_malloc", "js_malloc", "js_mallocz",
+    "qjs_at_record", "qjs_at_trace", "qjs_at_event", "qjs_at_capture_native",
+    "__js_malloc", "js_malloc", "js_mallocz",
     "js_malloc_rt", "js_mallocz_rt", "js_realloc_rt", "js_realloc2",
     "js_realloc", "js_realloc2_rt",
 })
@@ -252,6 +378,9 @@ def main():
     parser.add_argument("--top", type=int, metavar="N", default=0,
                         help="print the N biggest allocation sites (grouped by first "
                              "non-allocator native frame) to stderr")
+    parser.add_argument("--heap-at", type=int, metavar="N", default=0,
+                        help="v2 streams only: replay only up to the Nth heap-snapshot "
+                             "marker (H line) written by dumpAllocHeap")
     args = parser.parse_args()
 
     if args.diff:
@@ -281,7 +410,7 @@ def main():
         outputs.append(args.inputs[len(outputs)] + ".flame.json")
 
     for input_path, output_path in zip(args.inputs, outputs):
-        buckets, header = parse_buckets(input_path, args.metric)
+        buckets, header = parse_buckets(input_path, args.metric, args.heap_at)
         native_names = None
         if args.native:
             all_offsets = [o for _, _, native in buckets for o in native]

@@ -42,6 +42,9 @@ typedef struct {
 
 extern volatile int qjs_at_enabled;
 
+/* Bumped by qjs_at_start; per-thread stack caches resync on change. */
+extern volatile unsigned int qjs_at_generation;
+
 /* Record 1 of every N events; 1 = record everything. Checked before stack capture. */
 extern volatile unsigned int qjs_at_sample_rate;
 
@@ -56,17 +59,43 @@ static inline int qjs_at_sample(void) {
   return (++counter % rate) == 0;
 }
 
-void qjs_at_start(void);
-void qjs_at_start_aggregated(void);
+/*
+ * Starts streaming allocation events to the file at [path], one per line:
+ *
+ *   + func@file.kt:42   a JS frame was pushed onto the current stack
+ *   - 2                 N JS frames were popped
+ *   A 0x7f.. 128 native=52f70,82508   allocation of <size> at <ptr>
+ *   F 0x7f..                          free of <ptr>
+ *   R 0x7f.. 0x7e.. 256 native=..     realloc: new ptr, old ptr, new size
+ *
+ * The JS stack is implicit: replay pushes/pops to reconstruct it at any
+ * event. Aggregation (per-stack totals, live set) is left to the offline
+ * analyzer (alloc_trace_flamegraph.py).
+ *
+ * Limitation: the stream assumes a single JS thread; events from multiple
+ * runtimes interleave and the reconstructed stack is meaningless.
+ *
+ * Returns 0 on success, -1 when the file could not be opened.
+ */
+int qjs_at_start(const char *path);
+
+/* Writes the totals trailer, fsyncs and closes the stream, stops tracing. */
 void qjs_at_stop(void);
 
-void qjs_at_record(int kind, const void *ptr, const void *ptr2, size_t size,
-                   const QjsAtJsFrame *js_frames, int n_js_frames);
+/* Writes a heap-snapshot marker ("H") into the stream. The live heap at each
+   marker is computed offline (alloc_trace_flamegraph.py --metric retained,
+   optionally --heap-at N). */
+void qjs_at_dump_heap(void);
 
-int qjs_at_dump(const char *path);
+/* Called by the engine glue (quickjs.c) between qjs_at_begin/qjs_at_commit. */
+void qjs_at_stack_push(const QjsAtJsFrame *frame);
+void qjs_at_stack_pop(int n);
+void qjs_at_event(int kind, const void *ptr, const void *ptr2, size_t size);
 
-/* Dumps only allocations still alive (per allocation stack), same text format. */
-int qjs_at_dump_heap(const char *path);
+/* Push/pop/event calls between begin/commit take the stream lock once per
+   recorded event instead of once per line. */
+void qjs_at_begin(void);
+void qjs_at_commit(void);
 
 #ifdef __cplusplus
 }

@@ -62,18 +62,14 @@ actual class QuickJs private constructor(
     external fun createContext(): Long
 
     /**
-     * Starts allocation tracing of the QuickJS heap. Compiled in only when the native library
-     * was built with `-DQJS_ALLOC_TRACE`; otherwise this is a no-op.
+     * Starts allocation tracing of the QuickJS heap, streaming events (allocation/free/realloc
+     * with native stacks, plus JS stack push/pop markers) to [path] until [stopAllocTracing].
+     * Aggregate the stream offline with alloc_trace_flamegraph.py. Compiled in only when the
+     * native library was built with `-DQJS_ALLOC_TRACE`; otherwise this is a no-op.
+     * Returns false if the file could not be opened.
      */
     @JvmStatic
-    external fun startAllocTracing()
-
-    /**
-     * Same as [startAllocTracing] but aggregates counters per unique JS/native stack
-     * instead of buffering individual events. Suited for longer measurement sessions.
-     */
-    @JvmStatic
-    external fun startAllocTracingAggregated()
+    external fun startAllocTracing(path: String): Boolean
 
     /**
      * Records 1 of every [rate] allocation events (default 10). Use 1 to record everything.
@@ -82,24 +78,17 @@ actual class QuickJs private constructor(
     @JvmStatic
     external fun setAllocTracingSampleRate(rate: Int)
 
-    /** Stops allocation tracing. Buffered events are kept until [dumpAllocTracing]. */
+    /** Stops allocation tracing and finalizes the stream file. */
     @JvmStatic
     external fun stopAllocTracing()
 
     /**
-     * Writes buffered allocation events (with JS and native stacks) to [path].
-     * Returns false if the file could not be opened.
+     * Writes a heap-snapshot marker into the trace stream. The live heap at each marker
+     * is computed offline from the stream (alloc_trace_flamegraph.py --metric retained,
+     * optionally --heap-at N).
      */
     @JvmStatic
-    external fun dumpAllocTracing(path: String): Boolean
-
-    /**
-     * Writes allocations still alive at this moment (grouped by allocation stack)
-     * to [path]. Requires [setAllocTracingSampleRate] 1. Returns false if the file
-     * could not be opened.
-     */
-    @JvmStatic
-    external fun dumpAllocHeap(path: String): Boolean
+    external fun dumpAllocHeap()
 
     actual val version: String
       get() = quickJsVersion

@@ -21,14 +21,15 @@
 #include "bridge_dispatch.h"
 #include "alloc-trace.h"
 
-extern "C" JNIEXPORT void JNICALL
-Java_app_cash_zipline_QuickJs_startAllocTracing(JNIEnv* env, jclass type) {
-  qjs_at_start();
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_app_cash_zipline_QuickJs_startAllocTracingAggregated(JNIEnv* env, jclass type) {
-  qjs_at_start_aggregated();
+extern "C" JNIEXPORT jboolean JNICALL
+Java_app_cash_zipline_QuickJs_startAllocTracing(JNIEnv* env, jclass type, jstring path) {
+  const char* pathChars = env->GetStringUTFChars(path, nullptr);
+  if (!pathChars) {
+    return JNI_FALSE;
+  }
+  int result = qjs_at_start(pathChars);
+  env->ReleaseStringUTFChars(path, pathChars);
+  return result == 0 ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -41,26 +42,9 @@ Java_app_cash_zipline_QuickJs_stopAllocTracing(JNIEnv* env, jclass type) {
   qjs_at_stop();
 }
 
-extern "C" JNIEXPORT jboolean JNICALL
-Java_app_cash_zipline_QuickJs_dumpAllocTracing(JNIEnv* env, jclass type, jstring path) {
-  const char* pathChars = env->GetStringUTFChars(path, nullptr);
-  if (!pathChars) {
-    return JNI_FALSE;
-  }
-  int result = qjs_at_dump(pathChars);
-  env->ReleaseStringUTFChars(path, pathChars);
-  return result == 0 ? JNI_TRUE : JNI_FALSE;
-}
-
-extern "C" JNIEXPORT jboolean JNICALL
-Java_app_cash_zipline_QuickJs_dumpAllocHeap(JNIEnv* env, jclass type, jstring path) {
-  const char* pathChars = env->GetStringUTFChars(path, nullptr);
-  if (!pathChars) {
-    return JNI_FALSE;
-  }
-  int result = qjs_at_dump_heap(pathChars);
-  env->ReleaseStringUTFChars(path, pathChars);
-  return result == 0 ? JNI_TRUE : JNI_FALSE;
+extern "C" JNIEXPORT void JNICALL
+Java_app_cash_zipline_QuickJs_dumpAllocHeap(JNIEnv* env, jclass type) {
+  qjs_at_dump_heap();
 }
 
 extern "C" JNIEXPORT jlong JNICALL
