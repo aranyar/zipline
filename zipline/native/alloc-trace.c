@@ -128,7 +128,9 @@ static int qjs_at_capture_native_fp(uintptr_t *pcs, int max) {
     if (fp <= prev || ((uintptr_t)fp & 15) != 0) {
       break;
     }
-    uintptr_t pc = (uintptr_t)fp[1];
+    /* Saved return addresses point to the instruction AFTER the call; match
+       libunwind's non-top-frame semantics and attribute to the call site. */
+    uintptr_t pc = (uintptr_t)fp[1] - 1;
     pcs[count++] = pc >= qjs_at_stream.base ? pc - qjs_at_stream.base : pc;
     prev = fp;
     fp = (void **)*fp;

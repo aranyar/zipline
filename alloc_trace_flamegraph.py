@@ -46,13 +46,15 @@ LINE_RE = re.compile(
 
 
 class Node:
-    __slots__ = ("name", "weight", "self_weight", "children")
+    __slots__ = ("name", "weight", "self_weight", "children", "alloc_w", "free_w")
 
     def __init__(self, name):
         self.name = name
         self.weight = 0        # total weight of the subtree
         self.self_weight = 0   # weight of buckets ending exactly at this node
         self.children = {}
+        self.alloc_w = 0       # allocated bytes attributed to this node (direct replay)
+        self.free_w = 0        # freed bytes attributed to this node (direct replay)
 
 
 V2_HEADER_PREFIX = "# qjs-alloc-trace v2 "
@@ -107,39 +109,35 @@ def replay_stream(lines, metric, heap_at=0):
         stats[key][3] += size
 
     for line in lines:
-        if line.startswith("D "):
-            m = V2_FRAME_DEF_RE.match(line)
-            if m:
-                frame_names[int(m.group(1))] = m.group(2).rstrip("\n")
+        c = line[0]
+        if c == "D":
+            ident, _, name = line[2:].partition(" ")
+            frame_names[int(ident)] = name.rstrip("\n")
             continue
-        if line.startswith("+ "):
-            m = V2_PUSH_RE.match(line)
-            if m:
-                stack.append(frame_names.get(int(m.group(1)), "?"))
+        if c == "+":
+            stack.append(frame_names.get(int(line[2:-1]), "?"))
             continue
-        if line.startswith("- "):
-            m = V2_POP_RE.match(line)
-            if m:
-                n = int(m.group(1))
-                if n >= len(stack):
-                    stack.clear()
-                else:
-                    del stack[-n:]
+        if c == "-":
+            n = int(line[2:-1])
+            if n >= len(stack):
+                stack.clear()
+            else:
+                del stack[-n:]
             continue
-        m = V2_ALLOC_RE.match(line)
-        if m:
-            ptr, size, native = m.groups()
-            record_alloc(ptr, int(size), native)
+        if c == "A":
+            _a, ptr, rest = line.split(" ", 2)
+            size, _, native = rest.rpartition(" native=")
+            record_alloc(ptr, int(size), native.rstrip("\n"))
             continue
-        m = V2_FREE_RE.match(line)
-        if m:
-            record_free(m.group(1))
+        if c == "F":
+            record_free(line[2:-1])
             continue
-        m = V2_REALLOC_RE.match(line)
-        if m:
-            new_ptr, old_ptr, size, native = m.groups()
+        if c == "R":
+            _r, new_ptr, rest = line.split(" ", 2)
+            old_ptr, rest = rest.split(" ", 1)
+            size, _, native = rest.rpartition(" native=")
             record_free(old_ptr)
-            record_alloc(new_ptr, int(size), native)
+            record_alloc(new_ptr, int(size), native.rstrip("\n"))
 
     buckets = []
     for (frames, native), (allocs, alloc_bytes, frees, free_bytes) in stats.items():
@@ -410,13 +408,29 @@ def main():
         outputs.append(args.inputs[len(outputs)] + ".flame.json")
 
     for input_path, output_path in zip(args.inputs, outputs):
-        buckets, header = parse_buckets(input_path, args.metric, args.heap_at)
+        with open(input_path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+        is_v2 = any(line.startswith(V2_HEADER_PREFIX) for line in lines[:5])
+
+        header = {}
+        for line in lines:
+            if line.startswith("#"):
+                hm = re.match(r"^# (\w+)=(.*)", line)
+                if hm:
+                    header[hm.group(1)] = hm.group(2)
+
         native_names = None
         if args.native:
-            all_offsets = [o for _, _, native in buckets for o in native]
+            all_offsets = []
+            for line in lines:
+                m = re.search(r"native=(\S+)", line)
+                if m:
+                    all_offsets.extend(o for o in m.group(1).split(",") if o)
             native_names = symbolize(all_offsets, args.native, args.symbolizer)
 
+        buckets, _header = parse_buckets(input_path, args.metric, args.heap_at)
         root, dropped = build_trie(buckets, args.min_bytes, native_names)
+        n_buckets = len(buckets)
         events, stack_frames = emit_events(root)
 
         out = json.dumps({"traceEvents": events, "stackFrames": stack_frames}, indent=1)
@@ -426,7 +440,7 @@ def main():
             with open(output_path, "w") as f:
                 f.write(out)
         print("buckets=%d pruned=%d total_%s_bytes=%d events=%d -> %s" % (
-            len(buckets), dropped, args.metric, root.weight, len(events),
+            n_buckets, dropped, args.metric, root.weight, len(events),
             output_path if output_path != "-" else "stdout"), file=sys.stderr)
         # Sanity: for retained on a heap-mode dump the bucket total should
         # match the tracer's own live_bytes.
