@@ -38,8 +38,14 @@ class Node:
 
 def parse_buckets(path, metric):
     buckets = []
+    header = {}
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         for line in f:
+            if line.startswith("#"):
+                hm = re.match(r"^# (\w+)=(.*)", line)
+                if hm:
+                    header[hm.group(1)] = hm.group(2)
+                continue
             m = LINE_RE.match(line)
             if not m:
                 continue
@@ -58,7 +64,33 @@ def parse_buckets(path, metric):
             # dump order is innermost-first; flamegraph wants root-first
             frames.reverse()
             buckets.append((weight, frames, native.split(",") if native else []))
-    return buckets
+    return buckets, header
+
+
+# Allocator frames between the traced call site and the allocation itself;
+# skipped when grouping buckets by allocation site for --top.
+ALLOC_PREAMBLE = frozenset({
+    "qjs_at_record", "qjs_at_trace", "__js_malloc", "js_malloc", "js_mallocz",
+    "js_malloc_rt", "js_mallocz_rt", "js_realloc_rt", "js_realloc2",
+    "js_realloc", "js_realloc2_rt",
+})
+
+
+def print_top_sites(buckets, native_names, limit):
+    groups = {}
+    for weight, _frames, native in buckets:
+        if weight <= 0:
+            continue
+        if native_names:
+            names = [native_names.get(o, "0x" + o) for o in native if o]
+        else:
+            names = ["0x" + o for o in native if o]
+        site = next((n for n in names if n not in ALLOC_PREAMBLE),
+                    names[-1] if names else "<no native stack>")
+        weight_sum, alloc_count = groups.get(site, (0, 0))
+        groups[site] = (weight_sum + weight, alloc_count + 1)
+    for site, (weight, _count) in sorted(groups.items(), key=lambda kv: -kv[1][0])[:limit]:
+        print("%9.2f MB  %s" % (weight / 1e6, site), file=sys.stderr)
 
 
 def symbolize(native_offsets, library, symbolizer):
@@ -66,7 +98,9 @@ def symbolize(native_offsets, library, symbolizer):
     if not unique:
         return {}
     proc = subprocess.run(
-        [symbolizer, "--obj=" + library, "--functions=linkage"],
+        # GNU style + no inlines: exactly two lines (name, location) per address,
+        # which the line indexing below relies on.
+        [symbolizer, "--obj=" + library, "--functions=linkage", "--output-style=GNU", "--no-inlines"],
         input="\n".join("0x" + o for o in unique),
         capture_output=True,
         text=True,
@@ -187,7 +221,7 @@ def parse_buckets_diff(path1, path2, metric):
     by_key = {}
 
     def add(path, sign):
-        for weight, frames, native in parse_buckets(path, metric):
+        for weight, frames, native in parse_buckets(path, metric)[0]:
             key = (tuple(frames), tuple(native))
             by_key[key] = by_key.get(key, 0) + sign * weight
 
@@ -206,8 +240,8 @@ def main():
                         help="output JSON path(s), one per input (default: <input>.flame.json)")
     parser.add_argument("--metric", choices=["alloc", "free", "retained"], default="alloc",
                         help="weight per stack: alloc_bytes (default), free_bytes, or alloc-free")
-    parser.add_argument("--min-bytes", type=int, default=65536,
-                        help="drop buckets with weight below this (default: 65536)")
+    parser.add_argument("--min-bytes", type=int, default=0,
+                        help="drop buckets with weight below this (default: 0, keep everything)")
     parser.add_argument("--diff", action="store_true",
                         help="treat the two positional inputs as dump1 (earlier) and dump2 "
                              "(later); emit one flamegraph of positive per-stack deltas")
@@ -215,6 +249,9 @@ def main():
                         help="append symbolized native frames using this unstripped library")
     parser.add_argument("--symbolizer", default="llvm-symbolizer",
                         help="path to llvm-symbolizer (default: from PATH)")
+    parser.add_argument("--top", type=int, metavar="N", default=0,
+                        help="print the N biggest allocation sites (grouped by first "
+                             "non-allocator native frame) to stderr")
     args = parser.parse_args()
 
     if args.diff:
@@ -244,7 +281,7 @@ def main():
         outputs.append(args.inputs[len(outputs)] + ".flame.json")
 
     for input_path, output_path in zip(args.inputs, outputs):
-        buckets = parse_buckets(input_path, args.metric)
+        buckets, header = parse_buckets(input_path, args.metric)
         native_names = None
         if args.native:
             all_offsets = [o for _, _, native in buckets for o in native]
@@ -262,6 +299,14 @@ def main():
         print("buckets=%d pruned=%d total_%s_bytes=%d events=%d -> %s" % (
             len(buckets), dropped, args.metric, root.weight, len(events),
             output_path if output_path != "-" else "stdout"), file=sys.stderr)
+        # Sanity: for retained on a heap-mode dump the bucket total should
+        # match the tracer's own live_bytes.
+        live_bytes = header.get("live_bytes")
+        if live_bytes and args.metric == "retained" and abs(root.weight - int(live_bytes)) > int(live_bytes) // 100:
+            print("warning: bucket total %d differs from header live_bytes=%s "
+                  "(wrong --metric or truncated dump?)" % (root.weight, live_bytes), file=sys.stderr)
+        if args.top:
+            print_top_sites(buckets, native_names, args.top)
 
 
 if __name__ == "__main__":
