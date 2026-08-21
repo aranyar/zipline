@@ -244,6 +244,8 @@ int qjs_at_start(const char *path) {
   qjs_at_stream.base = qjs_at_library_base();
   qjs_at_stream.out = fopen(path, "w");
   if (qjs_at_stream.out) {
+    /* 1 MB stream buffer: events are small and hot-path, so a large buffer
+       keeps flush/syscall frequency low. */
     setvbuf(qjs_at_stream.out, NULL, _IOFBF, 1 << 20);
   }
   qjs_at_generation++;
@@ -280,7 +282,7 @@ void qjs_at_stop(void) {
             (unsigned long long)qjs_at_stream.free_bytes,
             (unsigned long long)qjs_at_stream.realloc_count);
     fflush(qjs_at_stream.out);
-#if QJS_AT_HAVE_UNWIND
+#if !defined(_WIN32)
     fsync(fileno(qjs_at_stream.out));
 #endif
     fclose(qjs_at_stream.out);
