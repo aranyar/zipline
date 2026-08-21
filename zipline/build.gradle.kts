@@ -266,7 +266,7 @@ android {
       externalNativeBuild {
         cmake {
           arguments("-DCMAKE_BUILD_TYPE=MinSizeRel")
-          cFlags("-g0", "-Os", "-fomit-frame-pointer", "-DNDEBUG", "-fvisibility=hidden")
+          cFlags("-g0", "-Os", "-fomit-frame-pointer", "-DNDEBUG", "-fvisibility=hidden", "-DQJS_ALLOC_TRACE")
           cppFlags("-g0", "-Os", "-fomit-frame-pointer", "-DNDEBUG", "-fvisibility=hidden")
         }
       }
@@ -274,7 +274,7 @@ android {
     val debug by getting {
       externalNativeBuild {
         cmake {
-          cFlags("-g", "-DDEBUG", "-DDUMP_LEAKS")
+          cFlags("-g", "-DDEBUG", "-DDUMP_LEAKS", "-DQJS_ALLOC_TRACE")
           cppFlags("-g", "-DDEBUG", "-DDUMP_LEAKS")
         }
       }

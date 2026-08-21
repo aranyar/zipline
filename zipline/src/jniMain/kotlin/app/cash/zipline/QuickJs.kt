@@ -61,6 +61,38 @@ actual class QuickJs private constructor(
     @JvmStatic
     external fun createContext(): Long
 
+    /**
+     * Starts allocation tracing of the QuickJS heap. Compiled in only when the native library
+     * was built with `-DQJS_ALLOC_TRACE`; otherwise this is a no-op.
+     */
+    @JvmStatic
+    external fun startAllocTracing()
+
+    /**
+     * Same as [startAllocTracing] but aggregates counters per unique JS/native stack
+     * instead of buffering individual events. Suited for longer measurement sessions.
+     */
+    @JvmStatic
+    external fun startAllocTracingAggregated()
+
+    /**
+     * Records 1 of every [rate] allocation events (default 10). Use 1 to record everything.
+     * May be changed while tracing is running.
+     */
+    @JvmStatic
+    external fun setAllocTracingSampleRate(rate: Int)
+
+    /** Stops allocation tracing. Buffered events are kept until [dumpAllocTracing]. */
+    @JvmStatic
+    external fun stopAllocTracing()
+
+    /**
+     * Writes buffered allocation events (with JS and native stacks) to [path].
+     * Returns false if the file could not be opened.
+     */
+    @JvmStatic
+    external fun dumpAllocTracing(path: String): Boolean
+
     actual val version: String
       get() = quickJsVersion
   }

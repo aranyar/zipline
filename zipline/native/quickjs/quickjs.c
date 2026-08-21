@@ -47,6 +47,10 @@
 #include "libunicode.h"
 #include "dtoa.h"
 
+#ifdef QJS_ALLOC_TRACE
+#include "../alloc-trace.h"
+#endif
+
 #define OPTIMIZE         1
 #define SHORT_OPCODES    1
 #if defined(__EMSCRIPTEN__)
@@ -1546,6 +1550,168 @@ static no_inline void *js_malloc_large(JSMallocContext *s, size_t size)
     return b->header.user_data;
 }
 
+#ifdef QJS_ALLOC_TRACE
+static BOOL js_class_has_bytecode(JSClassID class_id);
+static const char *JS_AtomGetStrRT(JSRuntime *rt, char *buf, int buf_size,
+                                   JSAtom atom);
+static int find_line_num(JSContext *ctx, JSFunctionBytecode *b,
+                         uint32_t pc_value, int *pcol_num);
+
+static void qjs_at_copy_atom(JSRuntime *rt, JSAtom atom, char *dst, int dst_size)
+{
+    char buf[128];
+    const char *str;
+    size_t len;
+    if (atom == JS_ATOM_NULL) {
+        dst[0] = '\0';
+        return;
+    }
+    str = JS_AtomGetStrRT(rt, buf, sizeof(buf), atom);
+    len = strlen(str);
+    if (len >= (size_t)dst_size)
+        len = dst_size - 1;
+    memcpy(dst, str, len);
+    dst[len] = '\0';
+}
+
+#define QJS_AT_CACHE_SHIFT 2
+#define QJS_AT_CACHE_PROBE 6
+
+typedef struct {
+    JSRuntime *rt;
+    int count; /* -1 = invalid */
+    JSStackFrame *sf[QJS_AT_MAX_JS_FRAMES];
+    JSValue func[QJS_AT_MAX_JS_FRAMES];
+    QjsAtJsFrame frames[QJS_AT_MAX_JS_FRAMES];
+} QjsAtStackCache;
+
+/* Interpreters are confined to one thread, so a thread-local cache is safe.
+   Cached pointers are only ever compared, never dereferenced. */
+static __thread QjsAtStackCache qjs_at_cache = { NULL, -1 };
+
+static void qjs_at_convert_frame(JSRuntime *rt, JSStackFrame *sf,
+                                 QjsAtJsFrame *out)
+{
+    JSObject *p;
+    JSFunctionBytecode *b;
+    memset(out, 0, sizeof(*out));
+    if (JS_VALUE_GET_TAG(sf->cur_func) != JS_TAG_OBJECT) {
+        out->is_native = 1;
+        return;
+    }
+    p = JS_VALUE_GET_OBJ(sf->cur_func);
+    if (!js_class_has_bytecode(p->class_id)) {
+        out->is_native = 1;
+        return;
+    }
+    b = p->u.func.function_bytecode;
+    qjs_at_copy_atom(rt, b->func_name, out->func_name, sizeof(out->func_name));
+    if (b->has_debug) {
+        int col_num;
+        qjs_at_copy_atom(rt, b->debug.filename, out->filename,
+                         sizeof(out->filename));
+        if (sf->cur_pc && sf->cur_pc > b->byte_code_buf) {
+            out->line_num = find_line_num(NULL, b,
+                                          sf->cur_pc - b->byte_code_buf - 1,
+                                          &col_num);
+        }
+    }
+}
+
+static int qjs_at_frames_equal(JSStackFrame *sf1, JSValue f1,
+                               JSStackFrame *sf2, JSValue f2)
+{
+    return sf1 == sf2 && !memcmp(&f1, &f2, sizeof(JSValue));
+}
+
+static void qjs_at_trace(JSMallocContext *s, int kind, const void *ptr,
+                         const void *ptr2, size_t size)
+{
+    /* malloc_ctx is the first member of JSRuntime */
+    JSRuntime *rt = (JSRuntime *)s;
+    JSStackFrame *sf;
+    QjsAtJsFrame frames[QJS_AT_MAX_JS_FRAMES];
+    QjsAtStackCache *cache = &qjs_at_cache;
+    int n = 0;
+
+    if (cache->rt != rt)
+        cache->count = -1;
+
+    if (cache->count >= 0) {
+        JSStackFrame *probe_sf[QJS_AT_CACHE_SHIFT + QJS_AT_CACHE_PROBE];
+        JSValue probe_func[QJS_AT_CACHE_SHIFT + QJS_AT_CACHE_PROBE];
+        int pn = 0;
+        int shift;
+        int matched = 0;
+
+        for (sf = rt->current_stack_frame;
+             sf && pn < QJS_AT_CACHE_SHIFT + QJS_AT_CACHE_PROBE;
+             sf = sf->prev_frame) {
+            if (sf->js_mode & JS_MODE_BACKTRACE_BARRIER)
+                break;
+            probe_sf[pn] = sf;
+            probe_func[pn] = sf->cur_func;
+            pn++;
+        }
+        for (shift = -QJS_AT_CACHE_SHIFT; shift <= QJS_AT_CACHE_SHIFT; shift++) {
+            int cur_off = shift > 0 ? shift : 0;
+            int cache_off = shift > 0 ? 0 : -shift;
+            int j;
+            if (pn - cur_off < QJS_AT_CACHE_PROBE ||
+                cache->count - cache_off < QJS_AT_CACHE_PROBE)
+                continue;
+            for (j = 0; j < QJS_AT_CACHE_PROBE; j++) {
+                if (!qjs_at_frames_equal(probe_sf[cur_off + j],
+                                         probe_func[cur_off + j],
+                                         cache->sf[cache_off + j],
+                                         cache->func[cache_off + j]))
+                    break;
+            }
+            if (j < QJS_AT_CACHE_PROBE)
+                continue;
+            /* tails coincide: reuse the cached converted frames */
+            if (shift > 0) {
+                int i;
+                for (i = 0; i < shift; i++)
+                    qjs_at_convert_frame(rt, probe_sf[i], &frames[i]);
+                n = shift + cache->count;
+                if (n > QJS_AT_MAX_JS_FRAMES)
+                    n = QJS_AT_MAX_JS_FRAMES;
+                for (j = 0; shift + j < n; j++)
+                    frames[shift + j] = cache->frames[j];
+            } else {
+                n = cache->count - cache_off;
+                for (j = 0; j < n; j++)
+                    frames[j] = cache->frames[cache_off + j];
+            }
+            matched = 1;
+            break;
+        }
+        if (matched) {
+            qjs_at_record(kind, ptr, ptr2, size, frames, n);
+            return;
+        }
+    }
+
+    memset(frames, 0, sizeof(frames));
+    for (sf = rt->current_stack_frame; sf && n < QJS_AT_MAX_JS_FRAMES;
+         sf = sf->prev_frame) {
+        if (sf->js_mode & JS_MODE_BACKTRACE_BARRIER)
+            break;
+        qjs_at_convert_frame(rt, sf, &frames[n]);
+        cache->sf[n] = sf;
+        cache->func[n] = sf->cur_func;
+        n++;
+    }
+    cache->rt = rt;
+    cache->count = n;
+    for (int i = 0; i < n; i++) {
+        cache->frames[i] = frames[i];
+    }
+    qjs_at_record(kind, ptr, ptr2, size, frames, n);
+}
+#endif /* QJS_ALLOC_TRACE */
+
 static void *__js_malloc(JSMallocContext *s, size_t size)
 {
     size_t total_size;
@@ -1585,9 +1751,20 @@ static void *__js_malloc(JSMallocContext *s, size_t size)
 #ifdef JS_MALLOC_USE_ITER
             ar->bitmap[block_idx / 32] |= 1 << (block_idx % 32);
 #endif
+#ifdef QJS_ALLOC_TRACE
+            if (qjs_at_enabled && qjs_at_sample())
+                qjs_at_trace(s, QJS_AT_ALLOC, b->user_data, NULL, size);
+#endif
             return b->user_data;
         } else {
+#ifdef QJS_ALLOC_TRACE
+            void *ptr = js_malloc_large(s, size);
+            if (qjs_at_enabled && ptr && qjs_at_sample())
+                qjs_at_trace(s, QJS_AT_ALLOC, ptr, NULL, size);
+            return ptr;
+#else
             return js_malloc_large(s, size);
+#endif
         }
     }
 }
@@ -1608,6 +1785,19 @@ static void __js_free(JSMallocContext *s, void *ptr)
 #ifdef JS_MALLOC_USE_ITER
             list_del(&lb->link);
 #endif
+#ifdef QJS_ALLOC_TRACE
+            if (qjs_at_enabled && qjs_at_sample()) {
+                size_t fsize = 0;
+                if (s->mf.js_malloc_usable_size) {
+                    fsize = s->mf.js_malloc_usable_size(lb);
+                    if (fsize >= sizeof(JSMallocLargeBlockHeader))
+                        fsize -= sizeof(JSMallocLargeBlockHeader);
+                    else
+                        fsize = 0;
+                }
+                qjs_at_trace(s, QJS_AT_FREE, ptr, NULL, fsize);
+            }
+#endif
             s->mf.js_free(&s->malloc_state, lb);
         }
     } else {
@@ -1615,6 +1805,10 @@ static void __js_free(JSMallocContext *s, void *ptr)
         unsigned int block_size_idx = b->block_size_idx;
         unsigned int block_size = js_malloc_block_sizes[block_size_idx];
         JSMallocArena *ar = (JSMallocArena *)((uint8_t *)b - block_size * block_idx - sizeof(JSMallocArena));
+#ifdef QJS_ALLOC_TRACE
+        if (qjs_at_enabled && qjs_at_sample())
+            qjs_at_trace(s, QJS_AT_FREE, ptr, NULL, block_size - sizeof(JSMallocBlockHeader));
+#endif
         b->u.free_next = ar->first_free_block;
         ar->first_free_block = block_idx;
 #ifdef JS_MALLOC_USE_ITER
@@ -1664,6 +1858,10 @@ static void *__js_realloc(JSMallocContext *s, void *ptr, size_t size)
             new_lb->header.block_size_idx = 0xff; /* fail safe */
 #ifdef JS_MALLOC_USE_ITER
             list_add_tail(&new_lb->link, &s->large_block_list);
+#endif
+#ifdef QJS_ALLOC_TRACE
+            if (qjs_at_enabled && qjs_at_sample())
+                qjs_at_trace(s, QJS_AT_REALLOC, new_lb->header.user_data, ptr, size);
 #endif
             return new_lb->header.user_data;
         }
