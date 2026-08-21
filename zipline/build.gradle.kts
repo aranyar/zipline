@@ -23,6 +23,11 @@ plugins {
   id("com.jakewharton.test-distribution")
 }
 
+// Compile the native library with -DQJS_ALLOC_TRACE (allocation tracing) when
+// -PqjsAllocTrace=true; otherwise the tracing entry points are no-ops.
+val qjsAllocTrace = providers.gradleProperty("qjsAllocTrace").orNull?.toBooleanStrictOrNull() ?: false
+val allocTraceFlags = if (qjsAllocTrace) arrayOf("-DQJS_ALLOC_TRACE") else emptyArray()
+
 val copyTestingJs = tasks.register<Copy>("copyTestingJs") {
   dependsOn(":zipline-testing:compileDevelopmentLibraryKotlinJs")
   destinationDir = rootProject.layout.buildDirectory.dir("generated/testingJs").get().asFile
@@ -266,7 +271,7 @@ android {
       externalNativeBuild {
         cmake {
           arguments("-DCMAKE_BUILD_TYPE=MinSizeRel")
-          cFlags("-g0", "-Os", "-fomit-frame-pointer", "-DNDEBUG", "-fvisibility=hidden", "-DQJS_ALLOC_TRACE")
+          cFlags("-g0", "-Os", "-fomit-frame-pointer", "-DNDEBUG", "-fvisibility=hidden", *allocTraceFlags)
           cppFlags("-g0", "-Os", "-fomit-frame-pointer", "-DNDEBUG", "-fvisibility=hidden")
         }
       }
@@ -274,7 +279,7 @@ android {
     val debug by getting {
       externalNativeBuild {
         cmake {
-          cFlags("-g", "-DDEBUG", "-DDUMP_LEAKS", "-DQJS_ALLOC_TRACE")
+          cFlags("-g", "-DDEBUG", "-DDUMP_LEAKS", *allocTraceFlags)
           cppFlags("-g", "-DDEBUG", "-DDUMP_LEAKS")
         }
       }
