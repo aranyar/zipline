@@ -16,8 +16,9 @@
 package app.cash.zipline
 
 internal actual fun loadNativeLibrary() {
-  // Combined Hermes + JNI glue library. CMake produces libhermesvmlean.so with
-  // our JNI glue merged in (via zipline_glue static lib linked into hermesvmlean).
-  // No separate libzipline_hermes_jni.so needed. Lean mode excludes JIT/parser.
-  System.loadLibrary("hermesvmlean")
+  // Combined Hermes + JNI glue library. CMake produces libhermesvmlean.so
+  // (prod, lean: no JS compiler) or libhermesvm.so (non-prod, full engine:
+  // needed for CDP Runtime.evaluate and CPU/heap profiling) with our JNI
+  // glue merged in. No separate libzipline_hermes_jni.so needed.
+  System.loadLibrary(BuildConfig.hermesLibraryName)
 }

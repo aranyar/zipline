@@ -727,9 +727,19 @@ android {
   namespace = "app.cash.zipline"
   compileSdk = libs.versions.compileSdk.get().toInt()
 
+  buildFeatures {
+    buildConfig = true
+  }
+
   defaultConfig {
     minSdk = libs.versions.minSdk.get().toInt()
     multiDexEnabled = true
+
+    buildConfigField(
+      "String",
+      "hermesLibraryName",
+      "\"${hermesLibraryName()}\"",
+    )
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     consumerProguardFiles("proguard-rules.pro")
