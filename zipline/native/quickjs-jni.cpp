@@ -52,6 +52,17 @@ Java_app_cash_zipline_QuickJs_dumpAllocTracing(JNIEnv* env, jclass type, jstring
   return result == 0 ? JNI_TRUE : JNI_FALSE;
 }
 
+extern "C" JNIEXPORT jboolean JNICALL
+Java_app_cash_zipline_QuickJs_dumpAllocHeap(JNIEnv* env, jclass type, jstring path) {
+  const char* pathChars = env->GetStringUTFChars(path, nullptr);
+  if (!pathChars) {
+    return JNI_FALSE;
+  }
+  int result = qjs_at_dump_heap(pathChars);
+  env->ReleaseStringUTFChars(path, pathChars);
+  return result == 0 ? JNI_TRUE : JNI_FALSE;
+}
+
 extern "C" JNIEXPORT jlong JNICALL
 Java_app_cash_zipline_QuickJs_createContext(JNIEnv* env, jclass type) {
   Context* c = new(std::nothrow) Context(env);

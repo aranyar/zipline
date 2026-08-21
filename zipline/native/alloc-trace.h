@@ -65,6 +65,9 @@ void qjs_at_record(int kind, const void *ptr, const void *ptr2, size_t size,
 
 int qjs_at_dump(const char *path);
 
+/* Dumps only allocations still alive (per allocation stack), same text format. */
+int qjs_at_dump_heap(const char *path);
+
 #ifdef __cplusplus
 }
 #endif

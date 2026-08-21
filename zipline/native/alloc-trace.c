@@ -47,6 +47,8 @@ typedef struct {
   uint64_t free_count;
   uint64_t free_bytes;
   uint64_t realloc_count;
+  uint64_t live_count; /* allocs minus matched frees, attributed to the alloc stack */
+  uint64_t live_bytes;
   uint32_t js_off; /* start index in the frame-id arena */
   uint8_t n_js;
   uint8_t n_native;
@@ -54,8 +56,18 @@ typedef struct {
   uintptr_t native_pcs[QJS_AT_MAX_NATIVE_FRAMES];
 } QjsAtBucket;
 
+/* Live pointer map: ptr -> (allocation stack bucket, requested size). */
+typedef struct {
+  const void *ptr;
+  QjsAtBucket *bucket;
+  uint64_t size;
+} QjsAtPtrEntry;
+
+#define QJS_AT_PTR_MAP_SIZE (1 << 23) /* 8M entries, power of two for mask probing */
+#define QJS_AT_PTR_TOMBSTONE ((const void *)1)
+
 #define QJS_AT_CAPACITY 131072
-#define QJS_AT_BUCKETS 262144
+#define QJS_AT_BUCKETS (QJS_AT_CAPACITY * 2)
 #define QJS_AT_DUMP_MAX_BUCKETS QJS_AT_CAPACITY
 /* Unique (deduplicated) JS frames; 20M x 65B, mostly untouched zero pages. */
 #define QJS_AT_FRAME_ARENA (20 * 1024 * 1024)
@@ -83,6 +95,10 @@ static size_t qjs_at_frame_arena_used = 0;
 static uint32_t *qjs_at_intern_table = NULL;
 static uint32_t *qjs_at_id_arena = NULL;
 static size_t qjs_at_id_arena_used = 0;
+static QjsAtPtrEntry *qjs_at_ptr_map = NULL;
+static size_t qjs_at_ptr_map_used = 0; /* live entries + tombstones */
+static uint64_t qjs_at_unmatched_frees = 0;
+static uint64_t qjs_at_ptr_dropped = 0;
 static uint64_t qjs_at_next_seq = 0;
 static size_t qjs_at_count = 0;
 static size_t qjs_at_write = 0;
@@ -156,6 +172,11 @@ static void qjs_at_reset(void) {
   free(qjs_at_id_arena);
   qjs_at_id_arena = NULL;
   qjs_at_id_arena_used = 0;
+  free(qjs_at_ptr_map);
+  qjs_at_ptr_map = NULL;
+  qjs_at_ptr_map_used = 0;
+  qjs_at_unmatched_frees = 0;
+  qjs_at_ptr_dropped = 0;
   qjs_at_next_seq = 0;
   qjs_at_count = 0;
   qjs_at_write = 0;
@@ -185,9 +206,11 @@ void qjs_at_start_aggregated(void) {
       (QjsAtJsFrame *)calloc(QJS_AT_FRAME_ARENA, sizeof(QjsAtJsFrame));
   qjs_at_intern_table = (uint32_t *)calloc(QJS_AT_INTERN_SIZE, sizeof(uint32_t));
   qjs_at_id_arena = (uint32_t *)calloc(QJS_AT_ID_ARENA, sizeof(uint32_t));
+  qjs_at_ptr_map = (QjsAtPtrEntry *)calloc(QJS_AT_PTR_MAP_SIZE, sizeof(QjsAtPtrEntry));
   qjs_at_mode = QJS_AT_MODE_AGGREGATE;
   qjs_at_enabled = qjs_at_buckets != NULL && qjs_at_frame_arena != NULL &&
-                   qjs_at_intern_table != NULL && qjs_at_id_arena != NULL;
+                   qjs_at_intern_table != NULL && qjs_at_id_arena != NULL &&
+                   qjs_at_ptr_map != NULL;
   pthread_mutex_unlock(&qjs_at_mutex);
 }
 
@@ -242,6 +265,57 @@ static uint32_t qjs_at_intern_frame(const QjsAtJsFrame *frame) {
   return UINT32_MAX;
 }
 
+static size_t qjs_at_ptr_hash(const void *ptr) {
+  uint64_t h = ((uintptr_t)ptr >> 4) * 11400714819323198485ULL;
+  return (size_t)(h >> 22); /* top 42 bits; masked by caller */
+}
+
+static void qjs_at_ptr_insert(const void *ptr, QjsAtBucket *bucket,
+                              uint64_t size) {
+  size_t index;
+  if (qjs_at_ptr_map_used >= (QJS_AT_PTR_MAP_SIZE * 3) / 4) {
+    qjs_at_ptr_dropped++;
+    return;
+  }
+  index = qjs_at_ptr_hash(ptr) & (QJS_AT_PTR_MAP_SIZE - 1);
+  for (size_t probe = 0; probe < QJS_AT_PTR_MAP_SIZE; probe++) {
+    QjsAtPtrEntry *entry = &qjs_at_ptr_map[index];
+    if (entry->ptr == NULL || entry->ptr == QJS_AT_PTR_TOMBSTONE) {
+      entry->ptr = ptr;
+      entry->bucket = bucket;
+      entry->size = size;
+      qjs_at_ptr_map_used++;
+      return;
+    }
+    if (entry->ptr == ptr) {
+      entry->bucket = bucket;
+      entry->size = size;
+      return;
+    }
+    index = (index + 1) & (QJS_AT_PTR_MAP_SIZE - 1);
+  }
+  qjs_at_ptr_dropped++;
+}
+
+static void qjs_at_ptr_remove(const void *ptr) {
+  size_t index = qjs_at_ptr_hash(ptr) & (QJS_AT_PTR_MAP_SIZE - 1);
+  for (size_t probe = 0; probe < QJS_AT_PTR_MAP_SIZE; probe++) {
+    QjsAtPtrEntry *entry = &qjs_at_ptr_map[index];
+    if (entry->ptr == NULL) {
+      break;
+    }
+    if (entry->ptr == ptr) {
+      entry->bucket->live_count--;
+      entry->bucket->live_bytes -= entry->size;
+      entry->ptr = QJS_AT_PTR_TOMBSTONE;
+      return;
+    }
+    index = (index + 1) & (QJS_AT_PTR_MAP_SIZE - 1);
+  }
+  /* allocated before tracing started or dropped from the map */
+  qjs_at_unmatched_frees++;
+}
+
 static int qjs_at_stack_equals(const QjsAtBucket *bucket, int n_js,
                                const uint32_t *js_ids, int n_native,
                                const uintptr_t *native_pcs) {
@@ -252,7 +326,8 @@ static int qjs_at_stack_equals(const QjsAtBucket *bucket, int n_js,
                 (size_t)n_native * sizeof(uintptr_t)) == 0;
 }
 
-static void qjs_at_record_aggregate(int kind, size_t size,
+static void qjs_at_record_aggregate(int kind, const void *ptr, const void *ptr2,
+                                    size_t size,
                                     const QjsAtJsFrame *js_frames, int n_js_frames) {
   uintptr_t native_pcs[QJS_AT_MAX_NATIVE_FRAMES];
   uint32_t js_ids[QJS_AT_MAX_JS_FRAMES];
@@ -295,11 +370,25 @@ static void qjs_at_record_aggregate(int kind, size_t size,
     if (kind == QJS_AT_ALLOC) {
       bucket->alloc_count++;
       bucket->alloc_bytes += size;
+      if (qjs_at_ptr_map && qjs_at_sample_rate == 1) {
+        bucket->live_count++;
+        bucket->live_bytes += size;
+        qjs_at_ptr_insert(ptr, bucket, size);
+      }
     } else if (kind == QJS_AT_FREE) {
       bucket->free_count++;
       bucket->free_bytes += size;
+      if (qjs_at_ptr_map && qjs_at_sample_rate == 1) {
+        qjs_at_ptr_remove(ptr);
+      }
     } else if (kind == QJS_AT_REALLOC) {
       bucket->realloc_count++;
+      if (qjs_at_ptr_map && qjs_at_sample_rate == 1) {
+        qjs_at_ptr_remove(ptr2);
+        bucket->live_count++;
+        bucket->live_bytes += size;
+        qjs_at_ptr_insert(ptr, bucket, size);
+      }
     }
     return;
   }
@@ -340,7 +429,7 @@ void qjs_at_record(int kind, const void *ptr, const void *ptr2, size_t size,
   }
 
   if (qjs_at_mode == QJS_AT_MODE_AGGREGATE && qjs_at_buckets) {
-    qjs_at_record_aggregate(kind, size, js_frames, n_js_frames);
+    qjs_at_record_aggregate(kind, ptr, ptr2, size, js_frames, n_js_frames);
     pthread_mutex_unlock(&qjs_at_mutex);
     return;
   }
@@ -500,6 +589,73 @@ int qjs_at_dump(const char *path) {
     for (size_t i = 0; i < qjs_at_count; i++) {
       size_t index = (start + i) % QJS_AT_CAPACITY;
       qjs_at_dump_event(out, &qjs_at_events[index]);
+    }
+  }
+  pthread_mutex_unlock(&qjs_at_mutex);
+  fflush(out);
+#if QJS_AT_HAVE_UNWIND
+  fsync(fileno(out));
+#endif
+  fclose(out);
+  return 0;
+}
+
+static int qjs_at_compare_buckets_live(const void *a, const void *b) {
+  const QjsAtBucket *ba = *(QjsAtBucket *const *)a;
+  const QjsAtBucket *bb = *(QjsAtBucket *const *)b;
+  if (ba->live_bytes != bb->live_bytes) {
+    return ba->live_bytes < bb->live_bytes ? 1 : -1;
+  }
+  if (ba->live_count != bb->live_count) {
+    return ba->live_count < bb->live_count ? 1 : -1;
+  }
+  return 0;
+}
+
+int qjs_at_dump_heap(const char *path) {
+  FILE *out = fopen(path, "w");
+  if (!out) {
+    return -1;
+  }
+  pthread_mutex_lock(&qjs_at_mutex);
+  uint64_t total_live_count = 0;
+  uint64_t total_live_bytes = 0;
+  fprintf(out, "# qjs-alloc-trace v1 mode=heap sample_rate=%u unmatched_frees=%llu ptr_dropped=%llu base=0x%llx\n",
+          qjs_at_sample_rate, (unsigned long long)qjs_at_unmatched_frees,
+          (unsigned long long)qjs_at_ptr_dropped,
+          (unsigned long long)qjs_at_base);
+  if (qjs_at_mode == QJS_AT_MODE_AGGREGATE && qjs_at_buckets) {
+    static QjsAtBucket *sorted[QJS_AT_BUCKETS];
+    size_t n = 0;
+    for (size_t i = 0; i < QJS_AT_BUCKETS; i++) {
+      if (qjs_at_buckets[i].occupied && qjs_at_buckets[i].live_count > 0) {
+        total_live_count += qjs_at_buckets[i].live_count;
+        total_live_bytes += qjs_at_buckets[i].live_bytes;
+        sorted[n++] = &qjs_at_buckets[i];
+      }
+    }
+    qsort(sorted, n, sizeof(QjsAtBucket *), qjs_at_compare_buckets_live);
+    fprintf(out, "# live objects=%llu live_bytes=%llu buckets=%zu\n",
+            (unsigned long long)total_live_count,
+            (unsigned long long)total_live_bytes, n);
+    if (n > QJS_AT_DUMP_MAX_BUCKETS) {
+      fprintf(out, "# truncated to top %d buckets by live_bytes\n",
+              QJS_AT_DUMP_MAX_BUCKETS);
+      n = QJS_AT_DUMP_MAX_BUCKETS;
+    }
+    for (size_t i = 0; i < n; i++) {
+      const QjsAtBucket *bucket = sorted[i];
+      QjsAtJsFrame frames[QJS_AT_MAX_JS_FRAMES];
+      for (int j = 0; j < bucket->n_js; j++) {
+        frames[j] = qjs_at_frame_arena[qjs_at_id_arena[bucket->js_off + j]];
+      }
+      fprintf(out, "S allocs=%llu alloc_bytes=%llu frees=0 free_bytes=0 reallocs=0 js=",
+              (unsigned long long)bucket->live_count,
+              (unsigned long long)bucket->live_bytes);
+      qjs_at_print_js_stack(out, bucket->n_js, frames);
+      fprintf(out, " native=");
+      qjs_at_print_native_stack(out, bucket->n_native, bucket->native_pcs);
+      fputc('\n', out);
     }
   }
   pthread_mutex_unlock(&qjs_at_mutex);

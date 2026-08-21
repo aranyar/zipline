@@ -93,6 +93,14 @@ actual class QuickJs private constructor(
     @JvmStatic
     external fun dumpAllocTracing(path: String): Boolean
 
+    /**
+     * Writes allocations still alive at this moment (grouped by allocation stack)
+     * to [path]. Requires [setAllocTracingSampleRate] 1. Returns false if the file
+     * could not be opened.
+     */
+    @JvmStatic
+    external fun dumpAllocHeap(path: String): Boolean
+
     actual val version: String
       get() = quickJsVersion
   }
