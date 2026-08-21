@@ -95,7 +95,38 @@ static uintptr_t qjs_at_library_base(void) {
   return 0;
 }
 
+#if defined(QJS_AT_FP_WALK)
+/* Frame-pointer chain walk: [fp] = previous frame record, [fp + 8] = saved
+   return address (arm64 x29 and x86_64 rbp layouts agree). Much cheaper than
+   DWARF unwinding, but only valid while every frame on the chain has a
+   frame pointer (build with -fno-omit-frame-pointer). */
+static int qjs_at_capture_native_fp(uintptr_t *pcs, int max) {
+  void **fp = (void **)__builtin_frame_address(0);
+  void **prev = NULL;
+  int count = 0;
+  while (fp != NULL && count < max) {
+    /* The stack grows down: the caller's frame record must sit at a higher,
+       16-byte-aligned address; anything else means a broken chain. */
+    if (fp <= prev || ((uintptr_t)fp & 15) != 0) {
+      break;
+    }
+    uintptr_t pc = (uintptr_t)fp[1];
+    pcs[count++] = pc >= qjs_at_base ? pc - qjs_at_base : pc;
+    prev = fp;
+    fp = (void **)*fp;
+  }
+  return count;
+}
+#endif
+
 static int qjs_at_capture_native(uintptr_t *pcs, int max) {
+#if defined(QJS_AT_FP_WALK)
+  int fp_count = qjs_at_capture_native_fp(pcs, max);
+  if (fp_count >= 3) {
+    return fp_count;
+  }
+  /* Chain broke too early (a frame without FP in the middle): fall back. */
+#endif
 #if QJS_AT_HAVE_UNWIND
   QjsAtUnwindContext u;
   u.pcs = pcs;

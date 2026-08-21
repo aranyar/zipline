@@ -29,7 +29,8 @@ fn setupTarget(b: *std.Build, tag: std.Target.Os.Tag, arch: std.Target.Cpu.Arch,
   var quoted_version_buf: [64]u8 = undefined;
   const quoted_version = try std.fmt.bufPrint(&quoted_version_buf, "\"{s}\"", .{ version });
   lib.root_module.addCMacro("CONFIG_VERSION", quoted_version);
-  lib.root_module.addCMacro("QJS_ALLOC_TRACE", "1");
+  // lib.root_module.addCMacro("QJS_ALLOC_TRACE", "1");
+  // lib.root_module.addCMacro("QJS_AT_FP_WALK", "1");
 
   lib.root_module.addIncludePath(b.path("native/include/share"));
   lib.root_module.addIncludePath(
@@ -56,8 +57,8 @@ fn setupTarget(b: *std.Build, tag: std.Target.Os.Tag, arch: std.Target.Cpu.Arch,
     },
     .flags = &.{
       "-std=gnu99",
-      // glibc declares dladdr/Dl_info (used by alloc-trace.c) only under _GNU_SOURCE.
-      "-D_GNU_SOURCE",
+      // The alloc tracer walks the frame-pointer chain instead of DWARF unwinding.
+      // "-fno-omit-frame-pointer",
     },
   });
 

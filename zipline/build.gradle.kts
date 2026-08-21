@@ -26,7 +26,7 @@ plugins {
 // Compile the native library with -DQJS_ALLOC_TRACE (allocation tracing) when
 // -PqjsAllocTrace=true; otherwise the tracing entry points are no-ops.
 val qjsAllocTrace = providers.gradleProperty("qjsAllocTrace").orNull?.toBooleanStrictOrNull() ?: false
-val allocTraceFlags = if (qjsAllocTrace) arrayOf("-DQJS_ALLOC_TRACE") else emptyArray()
+val allocTraceFlags = if (qjsAllocTrace) arrayOf("-DQJS_ALLOC_TRACE", "-DQJS_AT_FP_WALK") else emptyArray()
 
 val copyTestingJs = tasks.register<Copy>("copyTestingJs") {
   dependsOn(":zipline-testing:compileDevelopmentLibraryKotlinJs")
@@ -267,12 +267,15 @@ android {
   }
 
   buildTypes {
+    // Frame pointers stay on when memory profiling: the alloc tracer walks the
+    // x29/rbp chain instead of DWARF unwinding, which is much cheaper per event.
+    val framePointerFlag = if (qjsAllocTrace) "-fno-omit-frame-pointer" else "-fomit-frame-pointer"
     val release by getting {
       externalNativeBuild {
         cmake {
           arguments("-DCMAKE_BUILD_TYPE=MinSizeRel")
-          cFlags("-g0", "-Os", "-fomit-frame-pointer", "-DNDEBUG", "-fvisibility=hidden", *allocTraceFlags)
-          cppFlags("-g0", "-Os", "-fomit-frame-pointer", "-DNDEBUG", "-fvisibility=hidden")
+          cFlags("-g0", "-Os", framePointerFlag, "-DNDEBUG", "-fvisibility=hidden", *allocTraceFlags)
+          cppFlags("-g0", "-Os", framePointerFlag, "-DNDEBUG", "-fvisibility=hidden")
         }
       }
     }
