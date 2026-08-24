@@ -45,6 +45,15 @@ kotlin {
       }
     }
 
+    val jsMain by getting {
+      dependencies {
+        implementation(libs.kotlinx.serialization.json)
+        // Streaming JSON decode (decodeFromSource) for the flow-decode benchmarks.
+        implementation(libs.kotlinx.serialization.json.io)
+        implementation(libs.kotlinx.io.core)
+      }
+    }
+
     val hostMain by creating {
       dependsOn(commonMain)
       dependencies {

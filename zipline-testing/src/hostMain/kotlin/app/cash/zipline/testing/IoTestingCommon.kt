@@ -48,6 +48,9 @@ fun Zipline.loadTestingJsModulesOnly() {
   loadJsModuleFromResource("./kotlinx-atomicfu.js")
   loadJsModuleFromResource("./kotlinx-serialization-kotlinx-serialization-core.js")
   loadJsModuleFromResource("./kotlinx-serialization-kotlinx-serialization-json.js")
+  loadJsModuleFromResource("./kotlinx-io-kotlinx-io-core.js")
+  loadJsModuleFromResource("./kotlinx-io-kotlinx-io-bytestring.js")
+  loadJsModuleFromResource("./kotlinx-serialization-kotlinx-serialization-json-io.js")
   loadJsModuleFromResource("./kotlinx-coroutines-core.js")
   loadJsModuleFromResource("./kotlin_org_jetbrains_kotlin_kotlin_dom_api_compat.js")
   loadJsModuleFromResource("./zipline-root-zipline.js")
@@ -60,6 +63,9 @@ val testingModuleIds = listOf(
   "./kotlinx-atomicfu.js",
   "./kotlinx-serialization-kotlinx-serialization-core.js",
   "./kotlinx-serialization-kotlinx-serialization-json.js",
+  "./kotlinx-io-kotlinx-io-core.js",
+  "./kotlinx-io-kotlinx-io-bytestring.js",
+  "./kotlinx-serialization-kotlinx-serialization-json-io.js",
   "./kotlinx-coroutines-core.js",
   "./kotlin_org_jetbrains_kotlin_kotlin_dom_api_compat.js",
   "./zipline-root-zipline.js",
@@ -107,6 +113,9 @@ fun JsEngine.loadTestingJsModulesOnlyOnEngine() {
   load("./kotlinx-atomicfu.js")
   load("./kotlinx-serialization-kotlinx-serialization-core.js")
   load("./kotlinx-serialization-kotlinx-serialization-json.js")
+  load("./kotlinx-io-kotlinx-io-core.js")
+  load("./kotlinx-io-kotlinx-io-bytestring.js")
+  load("./kotlinx-serialization-kotlinx-serialization-json-io.js")
   load("./kotlinx-coroutines-core.js")
   load("./kotlin_org_jetbrains_kotlin_kotlin_dom_api_compat.js")
   load("./zipline-root-zipline.js")
