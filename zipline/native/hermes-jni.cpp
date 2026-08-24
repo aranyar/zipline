@@ -40,14 +40,19 @@ inline std::string jstringToCppString(JNIEnv* env, jstring javaString) {
 // Heap profiling entry points (startHeapSampling / stopHeapSampling /
 // dumpHeapSnapshot) mutate or walk the Hermes heap with no locking against
 // the JS thread, so they are only safe on the Zipline dispatcher thread —
-// the thread that created the engine. Warn when called from anywhere else.
-void warnIfOffJsThread(ContextJni* ctx, const char* fnName) {
-  if (ctx->jsThreadId != std::this_thread::get_id()) {
-    JSI_LOG_WARN("JsEngine",
-                 "%s called off the Zipline dispatcher thread; this races "
-                 "with JS execution and may crash or corrupt the profile",
-                 fnName);
+// the thread that created the engine.
+bool checkContextAndJsThread(JNIEnv* env, ContextJni* ctx) {
+  if (!ctx) {
+      throwJavaException(env, "java/lang/IllegalStateException",
+                         "JsEngine instance was closed");
   }
+  if (ctx->jsThreadId != std::this_thread::get_id()) {
+      throwJavaException(env, "java/lang/IllegalStateException",
+                 "Profiling function called off the Zipline dispatcher thread; this races "
+                 "with JS execution and may crash or corrupt the profile");
+    return false;
+  }
+  return true;
 }
 
 }  // namespace
@@ -172,12 +177,9 @@ Java_app_cash_zipline_JsEngine_gc(JNIEnv* env, jobject /*thiz*/, jlong _context)
 extern "C" JNIEXPORT void JNICALL
 Java_app_cash_zipline_JsEngine_nativeStartHeapSampling(JNIEnv* env, jobject /*thiz*/, jlong _context, jlong samplingInterval) {
   ContextJni* ctx = toContext(_context);
-  if (!ctx) {
-    throwJavaException(env, "java/lang/IllegalStateException",
-                       "JsEngine instance was closed");
+  if (!checkContextAndJsThread(env, ctx)) {
     return;
   }
-  warnIfOffJsThread(ctx, "startHeapSampling");
   try {
     ctx->runtime->instrumentation().startHeapSampling(
         static_cast<size_t>(samplingInterval));
@@ -193,12 +195,9 @@ Java_app_cash_zipline_JsEngine_nativeStartHeapSampling(JNIEnv* env, jobject /*th
 extern "C" JNIEXPORT jboolean JNICALL
 Java_app_cash_zipline_JsEngine_nativeStopHeapSampling(JNIEnv* env, jobject /*thiz*/, jlong _context, jstring path) {
   ContextJni* ctx = toContext(_context);
-  if (!ctx) {
-    throwJavaException(env, "java/lang/IllegalStateException",
-                       "JsEngine instance was closed");
+  if (!checkContextAndJsThread(env, ctx)) {
     return JNI_FALSE;
   }
-  warnIfOffJsThread(ctx, "stopHeapSampling");
   const char* pathChars = env->GetStringUTFChars(path, nullptr);
   if (!pathChars) {
     return JNI_FALSE;
@@ -231,12 +230,9 @@ Java_app_cash_zipline_JsEngine_nativeStopHeapSampling(JNIEnv* env, jobject /*thi
 extern "C" JNIEXPORT jboolean JNICALL
 Java_app_cash_zipline_JsEngine_nativeDumpHeapSnapshot(JNIEnv* env, jobject /*thiz*/, jlong _context, jstring path) {
   ContextJni* ctx = toContext(_context);
-  if (!ctx) {
-    throwJavaException(env, "java/lang/IllegalStateException",
-                       "JsEngine instance was closed");
+  if (!checkContextAndJsThread(env, ctx)) {
     return JNI_FALSE;
   }
-  warnIfOffJsThread(ctx, "dumpHeapSnapshot");
   const char* pathChars = env->GetStringUTFChars(path, nullptr);
   if (!pathChars) {
     return JNI_FALSE;
