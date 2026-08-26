@@ -30,6 +30,7 @@ hermes::vm::RuntimeConfig HermesCore_makeRuntimeConfig() {
   // config used by Zipline.
   return facebook::hermes::hardenedHermesRuntimeConfig().rebuild()
       .withES6Proxy(true)
+      .withEnableFlowJsonParser(true)
       .withGCConfig(HermesCore_makeGCConfig())
       .build();
 }
@@ -47,6 +48,7 @@ hermes::vm::RuntimeConfig HermesCore_makeRuntimeConfig(bool forceEagerCompilatio
   }
   return builder
       .withES6Proxy(true)
+      .withEnableFlowJsonParser(true)
       .withGCConfig(HermesCore_makeGCConfig())
       .build();
 }

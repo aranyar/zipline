@@ -116,8 +116,11 @@ set(_GLUE_INCLUDES
   "${HERMES_SRC}/API/jsi"
   "${HERMES_SRC}/public"
   "${HERMES_SRC}/include"
+  "${HERMES_SRC}/external"
   "${HERMES_SRC}/external/llvh/include"
   "${HERMES_SRC}/external/llvh/gen/include"
+  # FlowJSONParser.h and JSONLexer.h live with the runtime JSLib sources.
+  "${HERMES_SRC}/lib/VM/JSLib"
   "${HERMES_SRC}/../"
   "${HERMES_SRC}/../hermes-ios/"
   ${JNI_INCLUDE_DIRS}
@@ -161,12 +164,18 @@ if(ANDROID)
   file(MAKE_DIRECTORY "${_hermes_subdir}")
   add_subdirectory("${HERMES_SRC}" "${_hermes_subdir}")
 
+  # Glue sources include deep VM headers (FlowJSONParser/JSONLexer), so they
+  # must see the same compile definitions as the VM sources.
+  get_property(HERMES_COMPILE_DEFINITIONS DIRECTORY "${HERMES_SRC}" PROPERTY COMPILE_DEFINITIONS)
+
   # Add glue sources to hermesvm via a static lib, then link it in.
   # Android includes both core and JNI sources.
   add_library(zipline_glue STATIC ${GLUE_CORE_SOURCES} ${GLUE_JNI_SOURCES})
   target_include_directories(zipline_glue PRIVATE
     ${_GLUE_INCLUDES}
-    "${_hermes_subdir}/external/llvh/include")
+    "${_hermes_subdir}/external/llvh/include"
+    "${_hermes_subdir}/lib/config")
+  target_compile_definitions(zipline_glue PRIVATE ${HERMES_COMPILE_DEFINITIONS})
   if(HERMESVM_LEAN)
     target_compile_definitions(zipline_glue PRIVATE HERMESVM_LEAN=1)
     # Hermes CMake links libhermesvmlean_a.a with --whole-archive into
@@ -268,11 +277,17 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
   file(MAKE_DIRECTORY "${_hermes_subdir}")
   add_subdirectory("${HERMES_SRC}" "${_hermes_subdir}")
 
+  # Glue sources include deep VM headers (FlowJSONParser/JSONLexer), so they
+  # must see the same compile definitions as the VM sources.
+  get_property(HERMES_COMPILE_DEFINITIONS DIRECTORY "${HERMES_SRC}" PROPERTY COMPILE_DEFINITIONS)
+
   # iOS glue: only iOS-specific sources (no JNI dependencies).
   add_library(zipline_ios_glue STATIC ${GLUE_IOS_SOURCES})
   target_include_directories(zipline_ios_glue PRIVATE
     ${_GLUE_INCLUDES}
-    "${_hermes_subdir}/external/llvh/include")
+    "${_hermes_subdir}/external/llvh/include"
+    "${_hermes_subdir}/lib/config")
+  target_compile_definitions(zipline_ios_glue PRIVATE ${HERMES_COMPILE_DEFINITIONS})
   if(HERMESVM_LEAN)
     target_compile_definitions(zipline_ios_glue PRIVATE HERMESVM_LEAN=1)
   endif()
@@ -449,6 +464,27 @@ elseif(DEFINED HERMES_STATIC_BUILD_DIR)
   file(MAKE_DIRECTORY "${_hermes_subdir}")
   add_subdirectory("${HERMES_SRC}" "${_hermes_subdir}" EXCLUDE_FROM_ALL)
 
+  # Glue sources include deep VM headers (FlowJSONParser/JSONLexer), so they
+  # must see the same compile definitions as the VM sources.
+  get_property(HERMES_COMPILE_DEFINITIONS DIRECTORY "${HERMES_SRC}" PROPERTY COMPILE_DEFINITIONS)
+  # The prebuilt static libs in HERMES_STATIC_BUILD_DIR were configured
+  # separately; options that change VM class layouts may have been ON there
+  # while the fresh add_subdirectory above configures Hermes with defaults.
+  # Notably HERMES_ENABLE_INTL adds PinnedValue fields to Runtime (see
+  # RuntimeHermesValueFields.def), so a mismatch makes inline glue code
+  # (GCScope/LocalsRAII/clearThrownValue) read Runtime fields at wrong
+  # offsets and corrupts GC root structures. Mirror the static build's
+  # cache for such options.
+  if(EXISTS "${HERMES_STATIC_BUILD_DIR}/CMakeCache.txt")
+    foreach(_abi_opt HERMES_ENABLE_INTL HERMES_ENABLE_DEBUGGER)
+      file(STRINGS "${HERMES_STATIC_BUILD_DIR}/CMakeCache.txt" _abi_line
+           REGEX "^${_abi_opt}:BOOL=ON$")
+      if(_abi_line)
+        list(APPEND HERMES_COMPILE_DEFINITIONS ${_abi_opt})
+      endif()
+    endforeach()
+  endif()
+
   # Create our own combined dylib using prebuilt static libs + our glue.
   # macOS host needs both core sources (HermesRuntime API) and JNI sources (for JVM).
   set(_macos_frameworks)
@@ -469,7 +505,9 @@ elseif(DEFINED HERMES_STATIC_BUILD_DIR)
   add_library(hermesvm_jni SHARED ${GLUE_CORE_SOURCES} ${GLUE_JNI_SOURCES})
   target_include_directories(hermesvm_jni PRIVATE
     ${_GLUE_INCLUDES}
-    "${_hermes_subdir}/external/llvh/include")
+    "${_hermes_subdir}/external/llvh/include"
+    "${_hermes_subdir}/lib/config")
+  target_compile_definitions(hermesvm_jni PRIVATE ${HERMES_COMPILE_DEFINITIONS})
   if(HERMES_ENABLE_DEBUGGER)
     target_compile_definitions(hermesvm_jni PRIVATE HERMES_ENABLE_DEBUGGER=1)
   endif()
@@ -479,6 +517,10 @@ elseif(DEFINED HERMES_STATIC_BUILD_DIR)
     "-Wl,-force_load,${_THIN_BOOST_CTX_A}"
     ${_macos_frameworks}
   )
+  # Plain -Wl,-force_load strings create no ninja dependency: without this,
+  # rebuilt static archives never trigger a dylib relink.
+  set_property(TARGET hermesvm_jni PROPERTY LINK_DEPENDS
+    "${_THIN_HERMES_VM_A}" "${_THIN_JSI_A}" "${_THIN_BOOST_CTX_A}")
   set_target_properties(hermesvm_jni PROPERTIES
     OUTPUT_NAME hermesvm
     LINK_FLAGS "-Wl,-undefined,dynamic_lookup")

@@ -10,6 +10,13 @@
 #include "JniUtf8.h"
 #include "ExceptionThrowers.h"
 #include "InboundCallChannel.h"
+#include <jsi/hermes-interfaces.h>
+#include <hermes/VM/JSLib/RuntimeJSONUtils.h>
+#include <hermes/VM/JSArray.h>
+#include <hermes/VM/StringPrimitive.h>
+#include <hermes/VM/StringView.h>
+#include <hermes/Support/UTF8.h>
+#include "FlowJSONParser.h"
 
 // Android log macros - available to all functions in this file
 #ifdef __ANDROID__
@@ -151,6 +158,146 @@ Java_app_cash_zipline_JsEngine_gc(JNIEnv* env, jobject /*thiz*/, jlong _context)
     return;
   }
   ctx->gc(env);
+}
+
+namespace {
+
+/// Convert a vm-level string to std::string (UTF-8).
+std::string vmStringToUtf8(hermes::vm::Runtime& rt,
+                           hermes::vm::Handle<hermes::vm::StringPrimitive> s) {
+  llvh::SmallVector<char16_t, 256> u16;
+  s->appendUTF16String(u16);
+  std::string out;
+  hermes::convertUTF16ToUTF8WithReplacements(
+      out, llvh::ArrayRef<char16_t>(u16.data(), u16.size()));
+  return out;
+}
+
+}  // namespace
+
+/// Test hook for the incremental (flow) JSON parser. Feeds [json] to
+/// FlowJSONParser in [chunkSize]-byte chunks and returns a verification
+/// string:
+///   OK|<status>|<stringified flow-parse result>|<stringified reference>
+/// or, in flow mode (flow=1, root must be an array):
+///   OK|<status>|elements=N|<first element>|<last element>|<reference>
+/// The reference is the same input parsed with the runtime JSON.parse and
+/// re-stringified. On parse errors returns "ERR|<status>".
+extern "C" JNIEXPORT jstring JNICALL
+Java_app_cash_zipline_JsEngine_nativeFlowJsonParseForTest(JNIEnv* env, jobject /*thiz*/,
+                                                          jlong _context, jstring json,
+                                                          jint chunkSize, jboolean flow) {
+  namespace vm = hermes::vm;
+  ContextJni* ctx = toContext(_context);
+  if (!ctx) {
+    throwJavaException(env, "java/lang/IllegalStateException",
+                       "JsEngine instance was closed");
+    return nullptr;
+  }
+  auto* ih = facebook::jsi::castInterface<facebook::hermes::IHermes>(
+      ctx->runtime.get());
+  if (!ih) {
+    throwJavaException(env, "java/lang/IllegalStateException",
+                       "Not a Hermes runtime");
+    return nullptr;
+  }
+  auto* vmRt = static_cast<vm::Runtime*>(ih->getVMRuntimeUnsafe());
+
+  // Host-side call: no GC scope exists here; handles need one.
+  vm::GCScope gcScope(*vmRt);
+
+  std::string input = jstringToCppString(env, json);
+  const size_t chunk =
+      chunkSize > 0 ? static_cast<size_t>(chunkSize) : input.size() + 1;
+
+  auto undefined = vmRt->makeHandle(vm::HermesValue::encodeUndefinedValue());
+  auto stringify = [&](vm::Handle<vm::HermesValue> v) -> std::string {
+    auto r = vm::runtimeJSONStringify(*vmRt, v, undefined, undefined);
+    if (r == vm::ExecutionStatus::EXCEPTION) {
+      vmRt->clearThrownValue();
+      return "<stringify-error>";
+    }
+    return vmStringToUtf8(
+        *vmRt, vmRt->makeHandle<vm::StringPrimitive>(r->getString()));
+  };
+
+  // Flow mode: trace element count + first/last element.
+  int elementCount = 0;
+  std::string firstElement;
+  std::string lastElement;
+  vm::FlowJSONParser::ElementCallback callback = nullptr;
+  if (flow == JNI_TRUE) {
+    callback = [&](vm::Handle<vm::HermesValue> el) {
+      std::string s = stringify(el);
+      if (elementCount == 0) {
+        firstElement = s;
+      }
+      lastElement = s;
+      elementCount++;
+    };
+  }
+
+  // In-flight containers/keys live in this roots array (see FlowJSONParser);
+  // the hook's GCScope keeps it alive for the whole parse.
+  auto rootsRes = vm::JSArray::create(*vmRt, 16, 0);
+  if (rootsRes == vm::ExecutionStatus::EXCEPTION) {
+    vmRt->clearThrownValue();
+    return zipline::utf8ToJniString(env, std::string("ERR|roots-alloc"));
+  }
+  auto roots = vmRt->makeHandle<vm::JSArray>(rootsRes->getHermesValue());
+
+  vm::FlowJSONParser parser(*vmRt, callback);
+  bool failed = false;
+  size_t off = 0;
+  do {
+    size_t n = std::min(chunk, input.size() - off);
+    bool isFinal = off + n >= input.size();
+    if (parser.feed(
+            llvh::ArrayRef<uint8_t>(
+                reinterpret_cast<const uint8_t*>(input.data() + off), n),
+            isFinal,
+            roots) == vm::ExecutionStatus::EXCEPTION) {
+      failed = true;
+      break;
+    }
+    off += n;
+  } while (off < input.size());
+
+  const char* status = parser.status() == vm::FlowJSONParser::Status::Done
+      ? "Done"
+      : parser.status() == vm::FlowJSONParser::Status::NeedMoreData
+          ? "NeedMoreData"
+          : "Error";
+
+  if (failed) {
+    vmRt->clearThrownValue();
+    return zipline::utf8ToJniString(env, std::string("ERR|") + status);
+  }
+
+  // Reference: parse the complete input with the runtime JSON.parse.
+  auto expectedRes = vm::runtimeJSONParseRef(
+      *vmRt, hermes::UTF16Stream(llvh::ArrayRef<uint8_t>(
+                 reinterpret_cast<const uint8_t*>(input.data()), input.size())));
+  std::string expected;
+  if (expectedRes == vm::ExecutionStatus::EXCEPTION) {
+    vmRt->clearThrownValue();
+    expected = "<reference-parse-error>";
+  } else {
+    expected = stringify(vmRt->makeHandle(*expectedRes));
+  }
+
+  std::string result = std::string("OK|") + status + "|";
+  if (flow == JNI_TRUE) {
+    result += "elements=" + std::to_string(elementCount) + "|" + firstElement +
+        "|" + lastElement + "|" + expected;
+  } else {
+    std::string root =
+        parser.status() == vm::FlowJSONParser::Status::Done
+        ? stringify(vmRt->makeHandle(parser.getRootValue(roots)))
+        : "<no-root>";
+    result += root + "|" + expected;
+  }
+  return zipline::utf8ToJniString(env, result);
 }
 
 extern "C" JNIEXPORT jstring JNICALL

@@ -15,10 +15,32 @@
  */
 package app.cash.zipline
 
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.DeserializationStrategy
 import kotlinx.serialization.KSerializer
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 
 public actual fun <T> Json.decodeFromStringFast(deserializer: DeserializationStrategy<T>, string: String): T = decodeFromString(deserializer, string)
 
 public actual fun <T> Json.encodeToStringFast(serializer: KSerializer<T>, value: T): String = encodeToString(serializer, value)
+
+public actual val isFlowJsonAvailable: Boolean
+  get() = false
+
+public actual suspend fun <T> Json.decodeFromFlowJson(
+  deserializer: DeserializationStrategy<T>,
+  chunks: Flow<String>,
+): T = decodeFromString(deserializer, buildString { chunks.collect { append(it) } })
+
+public actual fun <T> Json.decodeListFromFlowJson(
+  elementSerializer: KSerializer<T>,
+  chunks: Flow<String>,
+): Flow<T> = flow {
+  val items = decodeFromString(
+    ListSerializer(elementSerializer),
+    buildString { chunks.collect { append(it) } },
+  )
+  for (item in items) emit(item)
+}

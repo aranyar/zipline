@@ -135,6 +135,16 @@ actual class JsEngine private constructor(
   }
 
   /**
+   * Test hook for the incremental (flow) JSON parser in Hermes internals
+   * (`FlowJSONParser`). Feeds [json] in [chunkSize]-byte chunks (whole input
+   * when <= 0) and returns a verification string; see the JNI implementation
+   * for the format. With [flow] the root must be a JSON array and completed
+   * elements are streamed to a callback instead of being accumulated.
+   */
+  fun flowJsonParseForTest(json: String, chunkSize: Int, flow: Boolean): String =
+    nativeFlowJsonParseForTest(context, json, chunkSize, flow)
+
+  /**
    * Compile [sourceCode] and return the bytecode. [fileName] will be used in error
    * reporting. [sourceMap] is optional to enable Kotlin stacktraces.
    *
@@ -232,6 +242,7 @@ actual class JsEngine private constructor(
   private external fun compile(context: Long, sourceCode: String, fileName: String, sourceMap: String?): ByteArray
   private external fun memoryUsage(context: Long): MemoryUsage?
   private external fun gc(context: Long)
+  private external fun nativeFlowJsonParseForTest(context: Long, json: String, chunkSize: Int, flow: Boolean): String
   private external fun getGlobalProperty(context: Long, name: String): String?
   private external fun setGlobalProperty(context: Long, name: String, value: String)
   private external fun deleteGlobalProperty(context: Long, name: String)

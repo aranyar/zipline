@@ -31,7 +31,12 @@ import org.junit.Test
  *  - downloadOnly: simulated slow download (chunked, per-chunk latency), no
  *    decode — the pure network cost of the body;
  *  - download+decodeFromStringFast: today's full flow — simulated slow
- *    download to a complete string, then fast decode (strictly sequential).
+ *    download to a complete string, then fast decode (strictly sequential);
+ *  - flowJsonWholeDoc / flowJsonFlow: the native incremental parser
+ *    (%FlowJSON global builtin) over a full string, whole-doc and
+ *    per-element streaming modes;
+ *  - download+flowJson: the target end state — chunks are fed to the native
+ *    incremental parser as they arrive, so parsing overlaps the download.
  *
  * Results are printed to stdout; run with:
  *   ./gradlew :zipline:jvmTest --tests "app.cash.zipline.JsonFlowBenchmarkTest"
@@ -62,6 +67,8 @@ class JsonFlowBenchmarkTest {
       println(engine.evaluate("$pkg.benchDecodeFromStringFast(globalThis.benchInput, 3)"))
       println(engine.evaluate("$pkg.benchDecodeFromStringKotlinx(globalThis.benchInput, 3)"))
       println(engine.evaluate("$pkg.benchDecodeFromSourceIo(globalThis.benchInput, 3)"))
+      println(engine.evaluate("$pkg.benchFlowJsonWholeDoc(globalThis.benchInput, 3)"))
+      println(engine.evaluate("$pkg.benchFlowJsonFlow(globalThis.benchInput, 3)"))
     }
 
     // Simulated slow network: 16 KB chunks, 5 ms of latency per chunk,
@@ -72,6 +79,7 @@ class JsonFlowBenchmarkTest {
       println("=== slow network: items=$itemCount jsonChars=$chars chunk=16384 latency=5ms")
       println(engine.evaluate("$pkg.benchDownloadOnly(globalThis.benchInput, 16384, 5, 3)"))
       println(engine.evaluate("$pkg.benchDownloadThenDecodeFast(globalThis.benchInput, 16384, 5, 3)"))
+      println(engine.evaluate("$pkg.benchDownloadThenFlowJson(globalThis.benchInput, 16384, 5, 3)"))
     }
 
     engine.evaluate("delete globalThis.benchInput; delete globalThis.bench;")

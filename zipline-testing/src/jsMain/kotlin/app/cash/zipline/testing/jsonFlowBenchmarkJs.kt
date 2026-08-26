@@ -24,7 +24,12 @@ import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.decodeFromDynamic
 import kotlinx.serialization.json.io.decodeFromSource as decodeFromSourceIo
+
+/** The %FlowJSON global builtin (native incremental JSON parser in Hermes,
+ *  enabled via RuntimeConfig.EnableFlowJsonParser). */
+private external val FlowJSON: dynamic
 
 @Serializable
 data class BenchSeller(
@@ -136,6 +141,38 @@ fun benchDecodeFromSourceIo(json: String, repeats: Int): String =
     benchJson.decodeFromSourceIo(listSerializer, kotlinx.io.Buffer().apply { writeString(json) })
   }
 
+/** FlowJSON whole-document mode: native incremental parse fed the full
+ *  string at once, then decodeFromDynamic. Compare with decodeFromStringFast
+ *  (native JSON.parse + decodeFromDynamic). */
+@OptIn(ExperimentalSerializationApi::class)
+@JsExport
+fun benchFlowJsonWholeDoc(json: String, repeats: Int): String =
+  bench("flowJsonWholeDoc+decodeFromDynamic", repeats) {
+    val p = FlowJSON.createParser()
+    val status = p.feed(json, true) as String
+    if (status != "done") throw IllegalStateException("FlowJSON status: $status")
+    benchJson.decodeFromDynamic(listSerializer, p.root())
+  }
+
+/** FlowJSON flow mode over 16 KB chunks: root-array elements stream through
+ *  the callback and are decoded one by one — no full-document tree is built. */
+@OptIn(ExperimentalSerializationApi::class)
+@JsExport
+fun benchFlowJsonFlow(json: String, repeats: Int): String =
+  bench("flowJsonFlow+decodeFromDynamic", repeats) {
+    val out = ArrayList<BenchItem>()
+    val p = FlowJSON.createParser { el: dynamic ->
+      out.add(benchJson.decodeFromDynamic(BenchItem.serializer(), el))
+    }
+    var offset = 0
+    while (offset < json.length) {
+      val end = minOf(json.length, offset + 16384)
+      p.feed(json.substring(offset, end), end >= json.length)
+      offset = end
+    }
+    out
+  }
+
 /** Download only, no decode — the pure network-latency cost of the body. */
 @JsExport
 fun benchDownloadOnly(
@@ -169,6 +206,40 @@ fun benchDownloadThenDecodeFast(
     val (body, dl) = slowHttpGetBody(json, chunkSize, chunkDelayMs)
     downloadMs = dl
     benchJson.decodeFromStringFast(listSerializer, body)
+  }
+  return "$result, downloadMs=$downloadMs"
+}
+
+/**
+ * The target end state: flow parsing overlaps the download — each chunk is
+ * fed to the native incremental parser as it arrives and elements are decoded
+ * on the fly, so total time ≈ download time.
+ */
+@OptIn(ExperimentalSerializationApi::class)
+@JsExport
+fun benchDownloadThenFlowJson(
+  json: String,
+  chunkSize: Int,
+  chunkDelayMs: Int,
+  repeats: Int,
+): String {
+  var downloadMs = 0L
+  val result = bench("download+flowJson(chunk=$chunkSize,latency=${chunkDelayMs}ms)", repeats) {
+    val out = ArrayList<BenchItem>()
+    val p = FlowJSON.createParser { el: dynamic ->
+      out.add(benchJson.decodeFromDynamic(BenchItem.serializer(), el))
+    }
+    val (_, dl) = measureTimedValue {
+      var offset = 0
+      while (offset < json.length) {
+        busyWait(chunkDelayMs)
+        val end = minOf(json.length, offset + chunkSize)
+        p.feed(json.substring(offset, end), end >= json.length)
+        offset = end
+      }
+    }
+    downloadMs = dl.inWholeMilliseconds
+    out
   }
   return "$result, downloadMs=$downloadMs"
 }
