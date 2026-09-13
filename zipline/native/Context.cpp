@@ -29,6 +29,7 @@
 #include "common/global-gc.h"
 #include "common/intset-builtins.h"
 #include "quickjs/quickjs.h"
+#include "mimalloc/mimalloc-quickjs.h"
 
 #include <vector>
 #include <string>
@@ -187,7 +188,7 @@ struct JniThreadDetacher {
 } // anonymous namespace
 
 Context::Context(JNIEnv* env)
-    : jsRuntime(JS_NewRuntime()),
+    : jsRuntime(JS_NewRuntimeMimalloc()),
       jsContext(JS_NewContextNoEval(jsRuntime)),
       jsContextForCompiling(JS_NewContext(jsRuntime)),
       outboundCallChannelClassId(0),
