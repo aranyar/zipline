@@ -32,4 +32,11 @@ internal class FsSaveReceiver(
       write(byteString)
     }
   }
+
+  override suspend fun receiveFile(path: Path, id: String, sha256: ByteString) {
+    val dest = downloadDir / sha256.hex()
+    if (path == dest) return
+    dest.parent?.let { downloadFileSystem.createDirectories(it) }
+    downloadFileSystem.copy(path, dest)
+  }
 }

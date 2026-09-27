@@ -59,6 +59,9 @@ int HermesContext_compile(void* context, const char* code, const char* sourceURL
                           const char* sourceMap, char** bytecodeOut, int* bytecodeSizeOut);
 HermesTaggedValue HermesContext_execute(void* context, const uint8_t* bytecode, int bytecodeSize,
                          const char* sourceURL);
+HermesTaggedValue HermesContext_executeMapped(void* context, const char* path,
+                                              int64_t offset, int64_t size,
+                                              const char* sourceURL);
 
 // Executes bytecode and returns a bridge handle to the raw JS result (for
 // bridge dispatch via HermesBridge_* functions). Returns 0 on error; the

@@ -93,6 +93,15 @@ expect class JsEngine : AutoCloseable {
    */
   fun execute(bytecode: ByteArray, fileName: String = "?"): Any?
 
+  /**
+   * mmap [offset, offset+length) of [path] and execute Hermes bytecode in
+   * place. The mapping is held by the runtime for as long as the module is
+   * loaded. [fileName] is used in error reporting.
+   *
+   * @throws JsException if there is an error loading or executing the code.
+   */
+  fun executeMapped(path: String, offset: Int, length: Int, fileName: String = "?"): Any?
+
   fun getGlobalProperty(name: String): String?
   fun setGlobalProperty(name: String, value: String)
   fun deleteGlobalProperty(name: String)

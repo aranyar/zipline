@@ -29,6 +29,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import okio.ByteString
 import okio.ByteString.Companion.encodeUtf8
+import okio.Path
 
 /**
  * Download resources from the network. If the download fails, the exception is reported to
@@ -52,6 +53,29 @@ internal class HttpFetcher(
     url = url,
     requestHeaders = ZIPLINE_REQUEST_HEADERS,
   )
+
+  suspend fun fetchToFile(
+    applicationName: String,
+    eventListener: EventListener,
+    baseUrl: String?,
+    url: String,
+    dest: Path,
+  ): Path {
+    val fullUrl = when {
+      baseUrl != null -> resolveUrl(baseUrl, url)
+      else -> url
+    }
+
+    val startValue = eventListener.downloadStart(applicationName, fullUrl)
+    val result = try {
+      httpClient.downloadToFile(fullUrl, ZIPLINE_REQUEST_HEADERS, dest)
+    } catch (e: Exception) {
+      eventListener.downloadFailed(applicationName, fullUrl, e, startValue)
+      throw e
+    }
+    eventListener.downloadEnd(applicationName, fullUrl, startValue)
+    return result
+  }
 
   suspend fun fetchManifest(
     applicationName: String,

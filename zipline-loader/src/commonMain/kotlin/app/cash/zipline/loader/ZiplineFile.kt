@@ -20,7 +20,11 @@ import okio.BufferedSink
 import okio.BufferedSource
 import okio.ByteString
 import okio.ByteString.Companion.encodeUtf8
+import okio.FileSystem
 import okio.IOException
+import okio.Path
+import okio.buffer
+import okio.use
 
 data class ZiplineFile(
   val ziplineVersion: Int,
@@ -97,3 +101,39 @@ data class ZiplineFile(
 private val MAGIC_PREFIX = "ZIPLINE\u0000".encodeUtf8()
 val CURRENT_ZIPLINE_VERSION = 20211020
 private val SECTION_HEADER_JS_BYTECODE = 1
+
+/** Byte range of Hermes bytecode inside a `.zipline` envelope. */
+data class HbcRange(
+  val offset: Long,
+  val size: Long,
+)
+
+/**
+ * Reads only the zipline header to locate HBC. Returns null when [path] is
+ * source JavaScript (CDP) rather than a zipline envelope.
+ */
+fun FileSystem.hbcRange(path: Path): HbcRange? {
+  source(path).buffer().use { source ->
+    if (!source.request(8) || source.readByteString(8) != MAGIC_PREFIX) {
+      return null
+    }
+    val version = source.readInt()
+    if (version != CURRENT_ZIPLINE_VERSION) {
+      throw IOException(
+        "unsupported version [version=$version][currentVersion=$CURRENT_ZIPLINE_VERSION]",
+      )
+    }
+    var offset = 12L // magic (8) + version (4)
+    while (!source.exhausted()) {
+      val sectionHeader = source.readInt()
+      val sectionLength = source.readInt()
+      offset += 8
+      if (sectionHeader == SECTION_HEADER_JS_BYTECODE) {
+        return HbcRange(offset, sectionLength.toLong())
+      }
+      source.skip(sectionLength.toLong())
+      offset += sectionLength
+    }
+  }
+  return null
+}

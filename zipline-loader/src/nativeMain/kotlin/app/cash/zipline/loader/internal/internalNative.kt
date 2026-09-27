@@ -22,6 +22,13 @@ import platform.Foundation.timeIntervalSince1970
 
 internal actual fun Zipline.multiplatformLoadJsModule(bytecode: ByteArray, id: String) = loadJsModule(bytecode, id)
 
+internal actual fun Zipline.multiplatformLoadJsModuleMapped(
+  path: String,
+  offset: Int,
+  length: Int,
+  id: String,
+) = loadJsModuleMapped(path, offset, length, id)
+
 internal actual val ecdsaP256: SignatureAlgorithm = EcdsaP256()
 
 internal actual val systemEpochMsClock: () -> Long =

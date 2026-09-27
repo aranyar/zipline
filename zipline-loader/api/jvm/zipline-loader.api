@@ -13,6 +13,19 @@ public abstract interface class app/cash/zipline/loader/FreshnessChecker {
 	public abstract fun isFresh (Lapp/cash/zipline/ZiplineManifest;J)Z
 }
 
+public final class app/cash/zipline/loader/HbcRange {
+	public fun <init> (JJ)V
+	public final fun component1 ()J
+	public final fun component2 ()J
+	public final fun copy (JJ)Lapp/cash/zipline/loader/HbcRange;
+	public static synthetic fun copy$default (Lapp/cash/zipline/loader/HbcRange;JJILjava/lang/Object;)Lapp/cash/zipline/loader/HbcRange;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getOffset ()J
+	public final fun getSize ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public abstract class app/cash/zipline/loader/LoadResult {
 }
 
@@ -130,11 +143,13 @@ public final class app/cash/zipline/loader/ZiplineFile$Companion {
 
 public final class app/cash/zipline/loader/ZiplineFileKt {
 	public static final fun getCURRENT_ZIPLINE_VERSION ()I
+	public static final fun hbcRange (Lokio/FileSystem;Lokio/Path;)Lapp/cash/zipline/loader/HbcRange;
 }
 
 public abstract class app/cash/zipline/loader/ZiplineHttpClient {
 	public fun <init> ()V
 	public abstract fun download (Ljava/lang/String;Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun downloadToFile (Ljava/lang/String;Ljava/util/List;Lokio/Path;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun openDevelopmentServerWebSocket (Ljava/lang/String;Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 

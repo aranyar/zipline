@@ -144,6 +144,20 @@ Java_app_cash_zipline_JsEngine_execute(JNIEnv* env, jobject /*thiz*/,
 }
 
 extern "C" JNIEXPORT jobject JNICALL
+Java_app_cash_zipline_JsEngine_executeMapped(JNIEnv* env, jobject /*thiz*/,
+                                             jlong _context, jstring path,
+                                             jlong offset, jlong size,
+                                             jstring fileName) {
+  ContextJni* ctx = toContext(_context);
+  if (!ctx) {
+    throwJavaException(env, "java/lang/IllegalStateException",
+                       "JsEngine instance was closed");
+    return nullptr;
+  }
+  return ctx->executeMapped(env, path, offset, size, fileName);
+}
+
+extern "C" JNIEXPORT jobject JNICALL
 Java_app_cash_zipline_JsEngine_evaluate(JNIEnv* env, jobject /*thiz*/,
                                     jlong _context, jstring source,
                                     jstring fileName) {

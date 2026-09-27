@@ -20,6 +20,9 @@ import app.cash.zipline.loader.ZiplineCache
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.withContext
 import okio.ByteString
+import okio.FileSystem
+import okio.Path
+import okio.SYSTEM
 
 /**
  * Fetch from the network and save to local fileSystem cache once downloaded.
@@ -48,6 +51,40 @@ internal class FsCachingFetcher(
         eventListener.cacheHit(applicationName, url, result.size.toLong())
       }
       return@withContext result
+    }
+  }
+
+  /**
+   * Returns a previously cached module path without hitting the network,
+   * so Hermes can mmap it.
+   */
+  suspend fun fetchCached(
+    applicationName: String,
+    eventListener: EventListener,
+    url: String,
+    sha256: ByteString,
+    nowEpochMs: Long,
+  ): Path? {
+    return withContext(cacheDispatcher) {
+      val path = cache.readPath(sha256, nowEpochMs) ?: return@withContext null
+      val sizeBytes = FileSystem.SYSTEM.metadataOrNull(path)?.size ?: 0L
+      eventListener.cacheHit(applicationName, url, sizeBytes)
+      path
+    }
+  }
+
+  /**
+   * Stores [path] in the Zipline cache so a later [fetchCached] can hit.
+   * Copies the file; does not load it into a [ByteString].
+   */
+  suspend fun storeFromPath(
+    applicationName: String,
+    sha256: ByteString,
+    path: Path,
+    nowEpochMs: Long,
+  ) {
+    withContext(cacheDispatcher) {
+      cache.putFromPath(applicationName, sha256, path, nowEpochMs)
     }
   }
 

@@ -335,6 +335,40 @@ int HermesContext_executeToHandle(void* context, const uint8_t* bytecode, int by
     }
 }
 
+HermesTaggedValue HermesContext_executeMapped(void* context, const char* path,
+                                              int64_t offset, int64_t size,
+                                              const char* sourceURL) {
+    if (!context || !path) {
+        snprintf(g_lastError, sizeof(g_lastError), "Invalid parameters");
+        return HermesTaggedValue{HERMES_TAG_ERROR, 0, NULL};
+    }
+    if (offset < 0 || size < 0) {
+        snprintf(g_lastError, sizeof(g_lastError), "Invalid mapped range");
+        return HermesTaggedValue{HERMES_TAG_ERROR, 0, NULL};
+    }
+
+    ContextBase* ctx = asNativeContext(context);
+    if (!ctx->runtime) {
+        snprintf(g_lastError, sizeof(g_lastError), "Invalid runtime");
+        return HermesTaggedValue{HERMES_TAG_ERROR, 0, NULL};
+    }
+
+    zipline_cdp::drainTasks(ctx);
+
+    try {
+        jsi::Value result = HermesCore_evaluateMappedFile(
+            ctx, path, static_cast<size_t>(offset), static_cast<size_t>(size),
+            sourceURL ? sourceURL : "zipline-module.js");
+        return toTaggedValue(*ctx->runtime, result);
+    } catch (const jsi::JSError& e) {
+        ctx->lastError = e.getMessage() + std::string("\n") + e.getStack();
+        return HermesTaggedValue{HERMES_TAG_ERROR, 0, NULL};
+    } catch (const std::exception& e) {
+        ctx->lastError = e.what();
+        return HermesTaggedValue{HERMES_TAG_ERROR, 0, NULL};
+    }
+}
+
 int HermesContext_getGlobalProperty(void* context, const char* name, char** valueOut) {
     if (!context || !name) {
         snprintf(g_lastError, sizeof(g_lastError), "Invalid parameters");

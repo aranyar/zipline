@@ -353,6 +353,37 @@ class ZiplineCacheTest {
   }
 
   @Test
+  fun readPathReturnsOnDiskFile(): Unit = runBlocking {
+    withCache { cache ->
+      val fileContents = "abc123".encodeUtf8()
+      val fileSha = fileContents.sha256()
+
+      assertNull(cache.readPath(fileSha, nowMillis))
+
+      cache.getOrPut("app1", fileSha, nowMillis) { fileContents }
+      val path = assertNotNull(cache.readPath(fileSha, nowMillis))
+      assertEquals(fileContents, fileSystem.read(path) { readByteString() })
+
+      cache.close()
+      assertNull(cache.readPath(fileSha, nowMillis))
+    }
+  }
+
+  @Test
+  fun putFromPathThenReadPath(): Unit = runBlocking {
+    withCache { cache ->
+      val fileContents = "abc123".encodeUtf8()
+      val fileSha = fileContents.sha256()
+      val source = directory / "src.bin"
+      fileSystem.write(source) { write(fileContents) }
+
+      cache.putFromPath("app1", fileSha, source, nowMillis)
+      val path = assertNotNull(cache.readPath(fileSha, nowMillis))
+      assertEquals(fileContents, fileSystem.read(path) { readByteString() })
+    }
+  }
+
+  @Test
   fun getOrPutFallsBackToDownloadAfterClose(): Unit = runBlocking {
     withCache { cache ->
       val fileContents = "abc123".encodeUtf8()

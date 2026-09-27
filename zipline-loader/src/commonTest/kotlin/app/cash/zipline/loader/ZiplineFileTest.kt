@@ -23,7 +23,9 @@ import kotlin.test.assertFailsWith
 import okio.Buffer
 import okio.ByteString.Companion.decodeHex
 import okio.ByteString.Companion.encodeUtf8
+import okio.FileSystem
 import okio.IOException
+import okio.SYSTEM
 
 class ZiplineFileTest {
   private val bytecode = "sample bytecode".encodeUtf8()
@@ -125,5 +127,30 @@ class ZiplineFileTest {
     val expected = ZiplineFile.read(Buffer().write(ziplineFileBytes))
     val parsed = ziplineFileBytes.toZiplineFile()
     assertEquals(expected, parsed)
+  }
+
+  @Test
+  fun hbcRangeReadsHeaderOnly() {
+    val original = ZiplineFile(CURRENT_ZIPLINE_VERSION, bytecode)
+    val path = FileSystem.SYSTEM_TEMPORARY_DIRECTORY / "zipline-hbc-range-test.zipline"
+    FileSystem.SYSTEM.write(path) { write(original.toByteString()) }
+    try {
+      val range = FileSystem.SYSTEM.hbcRange(path)
+      assertEquals(20L, range!!.offset)
+      assertEquals(bytecode.size.toLong(), range.size)
+    } finally {
+      FileSystem.SYSTEM.delete(path)
+    }
+  }
+
+  @Test
+  fun hbcRangeReturnsNullForSourceJs() {
+    val path = FileSystem.SYSTEM_TEMPORARY_DIRECTORY / "zipline-hbc-range-source.js"
+    FileSystem.SYSTEM.write(path) { writeUtf8("console.log('hi')") }
+    try {
+      assertEquals(null, FileSystem.SYSTEM.hbcRange(path))
+    } finally {
+      FileSystem.SYSTEM.delete(path)
+    }
   }
 }

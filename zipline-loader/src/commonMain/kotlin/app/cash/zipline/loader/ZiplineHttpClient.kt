@@ -15,15 +15,39 @@
  */
 package app.cash.zipline.loader
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.IO
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.withContext
+import app.cash.zipline.loader.internal.writeAtomically
 import okio.ByteString
+import okio.FileSystem
+import okio.Path
+import okio.SYSTEM
 
 abstract class ZiplineHttpClient {
   abstract suspend fun download(
     url: String,
     requestHeaders: List<Pair<String, String>>,
   ): ByteString
+
+  /**
+   * Streams [url] onto [dest], replacing it atomically (write `dest.tmp` then
+   * rename). Returns [dest]. The default implementation downloads into RAM
+   * then writes; platform clients override to sink the HTTP body directly.
+   */
+  open suspend fun downloadToFile(
+    url: String,
+    requestHeaders: List<Pair<String, String>>,
+    dest: Path,
+  ): Path {
+    val bytes = download(url, requestHeaders)
+    withContext(Dispatchers.IO) {
+      writeAtomically(FileSystem.SYSTEM, dest) { write(bytes) }
+    }
+    return dest
+  }
 
   /**
    * Opens a receive-only web socket to [url], and returns a flow that emits each message pushed by

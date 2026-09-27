@@ -262,6 +262,37 @@ jobject ContextJni::execute(JNIEnv* env, jbyteArray byteCode, jstring fileName) 
   return toJavaObject(env, result, /*throwOnUnsupportedType=*/false);
 }
 
+jobject ContextJni::executeMapped(JNIEnv* env, jstring path, jlong offset,
+                                  jlong size, jstring fileName) {
+  zipline_cdp::drainTasks(this);
+
+  std::string pathStr = zipline::jniStringToUtf8(env, path);
+  std::string fileNameStr = fileName ? zipline::jniStringToUtf8(env, fileName)
+                                     : std::string("zipline-module.js");
+
+  jsi::Value result;
+  try {
+    result = HermesCore_evaluateMappedFile(
+        this, pathStr.c_str(), static_cast<size_t>(offset),
+        static_cast<size_t>(size), fileNameStr);
+  } catch (const jsi::JSError& e) {
+    #ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_ERROR, "JSI",
+                        "executeMapped: JSError: %s", e.getMessage().c_str());
+    #endif
+    throwJsException(env, const_cast<jsi::JSError&>(e));
+    return nullptr;
+  } catch (const std::exception& e) {
+    #ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_ERROR, "JSI",
+                        "executeMapped: exception: %s", e.what());
+    #endif
+    throwJsExceptionFmt(env, this, "Hermes executeMapped failed: %s", e.what());
+    return nullptr;
+  }
+  return toJavaObject(env, result, /*throwOnUnsupportedType=*/false);
+}
+
 jobject ContextJni::evaluate(JNIEnv* env, jstring source, jstring fileName) {
 #ifdef HERMESVM_LEAN
   throwJavaException(env, "java/lang/UnsupportedOperationException",

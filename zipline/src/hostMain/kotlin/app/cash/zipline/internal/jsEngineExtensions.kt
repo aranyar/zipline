@@ -35,6 +35,12 @@ public fun loadJsModule(jsEngine: JsEngine, id: String, bytecode: ByteArray) {
   jsEngine.deleteGlobalProperty(CURRENT_MODULE_ID)
 }
 
+internal fun loadJsModule(jsEngine: JsEngine, id: String, path: String, offset: Int, length: Int) {
+  jsEngine.setGlobalProperty(CURRENT_MODULE_ID, id)
+  jsEngine.executeMapped(path, offset, length, id)
+  jsEngine.deleteGlobalProperty(CURRENT_MODULE_ID)
+}
+
 internal fun runApplication(jsEngine: JsEngine, mainModuleId: String, mainFunction: String) {
   jsEngine.callRequireMethod(mainModuleId, mainFunction)
 }

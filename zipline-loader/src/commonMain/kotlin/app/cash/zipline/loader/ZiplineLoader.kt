@@ -23,7 +23,7 @@ import app.cash.zipline.loader.internal.fetcher.FsEmbeddedFetcher
 import app.cash.zipline.loader.internal.fetcher.HttpFetcher
 import app.cash.zipline.loader.internal.fetcher.LoadedManifest
 import app.cash.zipline.loader.internal.fetcher.LoadedManifestComparator
-import app.cash.zipline.loader.internal.fetcher.fetch
+import app.cash.zipline.loader.internal.fileSha256
 import app.cash.zipline.loader.internal.getApplicationManifestFileName
 import app.cash.zipline.loader.internal.receiver.FsSaveReceiver
 import app.cash.zipline.loader.internal.receiver.Receiver
@@ -32,6 +32,8 @@ import app.cash.zipline.loader.internal.systemEpochMsClock
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.jvm.JvmName
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.IO
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.ProducerScope
 import kotlinx.coroutines.coroutineScope
@@ -46,8 +48,10 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.modules.EmptySerializersModule
 import kotlinx.serialization.modules.SerializersModule
+import okio.ByteString
 import okio.FileSystem
 import okio.Path
+import okio.SYSTEM
 
 /**
  * Gets code from an HTTP server, or optional local cache or embedded filesystem, and handles with a
@@ -182,9 +186,6 @@ class ZiplineLoader internal constructor(
       delegate = httpFetcher,
     )
   }
-
-  /** Fetch modules local-first since we have a hash and all content is the same. */
-  private val moduleFetchers = listOfNotNull(embeddedFetcher, cachingFetcher ?: httpFetcher)
 
   /**
    * Returns a flow of loaded applications.
@@ -640,24 +641,72 @@ class ZiplineLoader internal constructor(
      * Fetch and receive ZiplineFile module.
      */
     suspend fun run() {
-      val byteString = moduleFetchers.fetch(
-        concurrentDownloadsSemaphore = concurrentDownloadsSemaphore,
-        applicationName = applicationName,
-        eventListener = eventListener,
-        id = id,
-        sha256 = module.sha256,
-        nowEpochMs = nowEpochMs,
-        baseUrl = baseUrl,
-        url = module.url,
-      )!!
-      check(byteString.sha256() == module.sha256) {
-        "checksum mismatch for $id"
+      val fetched = concurrentDownloadsSemaphore.withPermit {
+        // Disk + HTTP body sink must not run on the zipline dispatcher:
+        // Android hosts install StrictMode.penaltyDeath on that thread.
+        withContext(Dispatchers.IO) {
+          embeddedFetcher?.fetch(
+            applicationName = applicationName,
+            eventListener = eventListener,
+            id = id,
+            sha256 = module.sha256,
+            nowEpochMs = nowEpochMs,
+            baseUrl = baseUrl,
+            url = module.url,
+          )?.let { return@withContext Fetched.Bytes(it) }
+
+          cachingFetcher?.fetchCached(
+            applicationName = applicationName,
+            eventListener = eventListener,
+            url = module.url,
+            sha256 = module.sha256,
+            nowEpochMs = nowEpochMs,
+          )?.let { return@withContext Fetched.File(it) }
+
+          val dest = FileSystem.SYSTEM_TEMPORARY_DIRECTORY /
+            "zipline-${module.sha256.hex()}.zipline"
+          val path = httpFetcher.fetchToFile(
+            applicationName = applicationName,
+            eventListener = eventListener,
+            baseUrl = baseUrl,
+            url = module.url,
+            dest = dest,
+          )
+          check(FileSystem.SYSTEM.fileSha256(path) == module.sha256) {
+            "checksum mismatch for $id"
+          }
+          cachingFetcher?.storeFromPath(
+            applicationName = applicationName,
+            sha256 = module.sha256,
+            path = path,
+            nowEpochMs = nowEpochMs,
+          )
+          Fetched.File(path)
+        }
       }
-      upstreams.joinAll()
-      withContext(dispatcher) {
-        receiver.receive(byteString, id, module.sha256)
+      when (fetched) {
+        is Fetched.Bytes -> {
+          check(fetched.byteString.sha256() == module.sha256) {
+            "checksum mismatch for $id"
+          }
+          upstreams.joinAll()
+          withContext(dispatcher) {
+            receiver.receive(fetched.byteString, id, module.sha256)
+          }
+        }
+        is Fetched.File -> {
+          upstreams.joinAll()
+          withContext(dispatcher) {
+            receiver.receiveFile(fetched.path, id, module.sha256)
+          }
+        }
       }
     }
+  }
+
+  private sealed class Fetched {
+    class Bytes(val byteString: ByteString) : Fetched()
+    class File(val path: Path) : Fetched()
   }
 
   private suspend fun loadCachedOrEmbeddedManifest(

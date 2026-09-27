@@ -79,6 +79,8 @@ public final class app/cash/zipline/JsEngine : java/io/Closeable, java/lang/Auto
 	public final fun evaluateForBridge (Ljava/lang/String;Ljava/lang/String;)Ljava/lang/Object;
 	public final fun execute ([BLjava/lang/String;)Ljava/lang/Object;
 	public static synthetic fun execute$default (Lapp/cash/zipline/JsEngine;[BLjava/lang/String;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun executeMapped (Ljava/lang/String;IILjava/lang/String;)Ljava/lang/Object;
+	public static synthetic fun executeMapped$default (Lapp/cash/zipline/JsEngine;Ljava/lang/String;IILjava/lang/String;ILjava/lang/Object;)Ljava/lang/Object;
 	public final fun gc ()V
 	public final fun getGcThreshold ()J
 	public final fun getGlobalProperty (Ljava/lang/String;)Ljava/lang/String;
@@ -182,6 +184,7 @@ public final class app/cash/zipline/Zipline : java/lang/AutoCloseable {
 	public final fun initRdmaChannel (Lapp/cash/zipline/RdmaChangeSink;)V
 	public final fun loadJsModule (Ljava/lang/String;Ljava/lang/String;)V
 	public final fun loadJsModule ([BLjava/lang/String;)V
+	public final fun loadJsModuleMapped (Ljava/lang/String;IILjava/lang/String;)V
 	public final fun take (Ljava/lang/String;Lapp/cash/zipline/ZiplineScope;)Lapp/cash/zipline/ZiplineService;
 	public final fun take (Ljava/lang/String;Lapp/cash/zipline/ZiplineScope;Lapp/cash/zipline/internal/bridge/ZiplineServiceAdapter;)Lapp/cash/zipline/ZiplineService;
 	public static synthetic fun take$default (Lapp/cash/zipline/Zipline;Ljava/lang/String;Lapp/cash/zipline/ZiplineScope;ILjava/lang/Object;)Lapp/cash/zipline/ZiplineService;

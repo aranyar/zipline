@@ -8,6 +8,7 @@ _HermesContext_compile
 _HermesContext_deleteGlobalProperty
 _HermesContext_evaluate
 _HermesContext_execute
+_HermesContext_executeMapped
 _HermesContext_executeToHandle
 _HermesContext_freeValue
 _HermesContext_gc

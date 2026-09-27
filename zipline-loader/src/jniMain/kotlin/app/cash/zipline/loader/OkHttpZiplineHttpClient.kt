@@ -31,6 +31,10 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
+import okio.FileSystem
+import okio.Path
+import okio.SYSTEM
+import app.cash.zipline.loader.internal.writeAtomically
 
 internal class OkHttpZiplineHttpClient(
   private val okHttpClient: OkHttpClient,
@@ -80,6 +84,58 @@ internal class OkHttpZiplineHttpClient(
           }
 
           continuation.resume(byteString)
+        }
+      })
+    }
+  }
+
+  override suspend fun downloadToFile(
+    url: String,
+    requestHeaders: List<Pair<String, String>>,
+    dest: Path,
+  ): Path {
+    return suspendCancellableCoroutine { continuation ->
+      val call = okHttpClient.newCall(
+        Request.Builder()
+          .url(url)
+          .apply {
+            for ((name, value) in requestHeaders) {
+              addHeader(name, value)
+            }
+          }
+          .build(),
+      )
+
+      continuation.invokeOnCancellation {
+        call.cancel()
+      }
+
+      call.enqueue(object : Callback {
+        override fun onFailure(
+          call: Call,
+          e: IOException,
+        ) {
+          continuation.resumeWithException(e)
+        }
+
+        override fun onResponse(
+          call: Call,
+          response: Response,
+        ) {
+          try {
+            response.use {
+              if (!response.isSuccessful) {
+                throw IOException("failed to fetch $url: ${response.code}")
+              }
+              val body = response.body ?: throw IOException("failed to fetch $url: empty body")
+              writeAtomically(FileSystem.SYSTEM, dest) {
+                body.source().readAll(this)
+              }
+            }
+            continuation.resume(dest)
+          } catch (e: IOException) {
+            continuation.resumeWithException(e)
+          }
         }
       })
     }

@@ -22,6 +22,7 @@ import app.cash.zipline.loader.internal.cache.Files
 import app.cash.zipline.loader.internal.cache.SqlDriverFactory
 import app.cash.zipline.loader.internal.cache.createDatabase
 import app.cash.zipline.loader.internal.fetcher.LoadedManifest
+import app.cash.zipline.loader.internal.fileSha256
 import kotlin.concurrent.Volatile
 import okio.ByteString
 import okio.ByteString.Companion.decodeHex
@@ -29,6 +30,8 @@ import okio.Closeable
 import okio.FileNotFoundException
 import okio.FileSystem
 import okio.Path
+import okio.SYSTEM
+import okio.use
 
 /**
  * Stores downloaded files.
@@ -176,6 +179,73 @@ class ZiplineCache private constructor(
     if (closed) return null
     val metadata = database.filesQueries.get(sha256.hex()).executeAsOneOrNull() ?: return null
     return read(metadata, nowEpochMs)
+  }
+
+  /**
+   * Returns the on-disk path of a READY module without copying it into a [ByteString],
+   * so Hermes can mmap it. Null if absent, dirty, missing on disk, or corrupt.
+   */
+  internal fun readPath(
+    sha256: ByteString,
+    nowEpochMs: Long,
+  ): Path? {
+    if (closed) return null
+    val metadata = database.filesQueries.get(sha256.hex()).executeAsOneOrNull() ?: return null
+    if (metadata.file_state != FileState.READY) return null
+
+    database.filesQueries.update(
+      id = metadata.id,
+      file_state = metadata.file_state,
+      size_bytes = metadata.size_bytes,
+      last_used_at_epoch_ms = nowEpochMs,
+    )
+    val path = path(metadata)
+    val onDisk = try {
+      fileSystem.exists(path) && fileSystem.fileSha256(path) == metadata.sha256_hex.decodeHex()
+    } catch (_: FileNotFoundException) {
+      false
+    }
+    if (!onDisk) {
+      try {
+        fileSystem.delete(path)
+        database.filesQueries.delete(metadata.id)
+      } catch (_: Exception) {
+      }
+      return null
+    }
+    return path
+  }
+
+  /**
+   * Copies [source] into the cache if [sha256] is not already READY. Does not
+   * materialize a [ByteString].
+   */
+  internal fun putFromPath(
+    applicationName: String,
+    sha256: ByteString,
+    source: Path,
+    nowEpochMs: Long,
+  ) {
+    if (hasWriteFailures || closed) return
+    try {
+      if (readPath(sha256, nowEpochMs) != null) return
+      val metadata = openForWrite(
+        applicationName = applicationName,
+        sha256 = sha256,
+        nowEpochMs = nowEpochMs,
+        isManifest = false,
+      ) ?: return
+      val dest = path(metadata)
+      dest.parent?.let { fileSystem.createDirectories(it) }
+      fileSystem.write(dest) {
+        FileSystem.SYSTEM.source(source).use { writeAll(it) }
+      }
+      val sizeBytes = fileSystem.metadata(dest).size ?: 0L
+      setReady(metadata, sizeBytes, nowEpochMs)
+    } catch (e: Exception) {
+      hasWriteFailures = true
+      loaderEventListener.cacheStorageFailed(applicationName, e)
+    }
   }
 
   private fun read(

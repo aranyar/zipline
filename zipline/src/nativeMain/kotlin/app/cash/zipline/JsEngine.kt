@@ -435,6 +435,18 @@ actual class JsEngine private constructor(
     return tagged.useContents { toAny("Execution failed") }
   }
 
+  actual fun executeMapped(path: String, offset: Int, length: Int, fileName: String): Any? {
+    checkNotClosed()
+    val tagged = HermesContext_executeMapped(
+      contextPointer,
+      path,
+      offset.toLong(),
+      length.toLong(),
+      fileName,
+    )
+    return tagged.useContents { toAny("Execution failed") }
+  }
+
   actual fun gc() {
     checkNotClosed()
     HermesContext_gc(contextPointer)

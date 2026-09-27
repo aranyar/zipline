@@ -17,11 +17,19 @@ package app.cash.zipline.loader.internal.receiver
 
 import app.cash.zipline.EventListener
 import app.cash.zipline.Zipline
-import app.cash.zipline.loader.ZiplineFile
+import app.cash.zipline.loader.HbcRange
 import app.cash.zipline.loader.ZiplineFile.Companion.toZiplineFile
+import app.cash.zipline.loader.hbcRange
 import app.cash.zipline.loader.internal.multiplatformLoadJsModule
+import app.cash.zipline.loader.internal.multiplatformLoadJsModuleMapped
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.IO
+import kotlinx.coroutines.withContext
 import okio.ByteString
 import okio.ByteString.Companion.encodeUtf8
+import okio.FileSystem
+import okio.Path
+import okio.SYSTEM
 
 /**
  * Load the [ZiplineFile] into a Zipline runtime instance.
@@ -40,6 +48,30 @@ internal class ZiplineLoadReceiver(
         // compiled at runtime instead of Hermes bytecode.
         zipline.loadJsModule(byteString.utf8(), id)
       }
+    } finally {
+      eventListener.moduleLoadEnd(zipline, id, startValue)
+    }
+  }
+
+  override suspend fun receiveFile(path: Path, id: String, sha256: ByteString) {
+    val range: HbcRange? = withContext(Dispatchers.IO) {
+      FileSystem.SYSTEM.hbcRange(path)
+    }
+    if (range == null) {
+      val byteString = withContext(Dispatchers.IO) {
+        FileSystem.SYSTEM.read(path) { readByteString() }
+      }
+      receive(byteString, id, sha256)
+      return
+    }
+    val startValue = eventListener.moduleLoadStart(zipline, id)
+    try {
+      zipline.multiplatformLoadJsModuleMapped(
+        path.toString(),
+        range.offset.toInt(),
+        range.size.toInt(),
+        id,
+      )
     } finally {
       eventListener.moduleLoadEnd(zipline, id, startValue)
     }

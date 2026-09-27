@@ -180,6 +180,10 @@ actual class JsEngine private constructor(
     return execute(context, bytecode, fileName)
   }
 
+  actual fun executeMapped(path: String, offset: Int, length: Int, fileName: String): Any? {
+    return executeMapped(context, path, offset.toLong(), length.toLong(), fileName)
+  }
+
   actual fun getGlobalProperty(name: String): String? {
     return getGlobalProperty(context, name)
   }
@@ -254,6 +258,13 @@ actual class JsEngine private constructor(
   private external fun getInboundCallChannel(context: Long, name: String): Long
   private external fun setOutboundCallChannel(context: Long, name: String, callChannel: CallChannel)
   private external fun execute(context: Long, bytecode: ByteArray, fileName: String): Any?
+  private external fun executeMapped(
+    context: Long,
+    path: String,
+    offset: Long,
+    length: Long,
+    fileName: String,
+  ): Any?
   private external fun evaluate(context: Long, source: String, fileName: String): Any?
   private external fun compile(context: Long, sourceCode: String, fileName: String, sourceMap: String?): ByteArray
   private external fun memoryUsage(context: Long): MemoryUsage?

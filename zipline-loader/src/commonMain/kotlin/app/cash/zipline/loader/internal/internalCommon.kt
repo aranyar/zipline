@@ -22,6 +22,13 @@ import app.cash.zipline.loader.internal.tink.subtle.Ed25519
 // TODO: drop this once we adopt Kotlin Hierarchical Multiplatform projects
 internal expect fun Zipline.multiplatformLoadJsModule(bytecode: ByteArray, id: String)
 
+internal expect fun Zipline.multiplatformLoadJsModuleMapped(
+  path: String,
+  offset: Int,
+  length: Int,
+  id: String,
+)
+
 internal const val MANIFEST_FILE_NAME = "manifest.zipline.json"
 
 internal fun getApplicationManifestFileName(applicationName: String) = "$applicationName.$MANIFEST_FILE_NAME"

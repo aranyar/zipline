@@ -30,6 +30,8 @@ class ContextJni : public ContextBase {
 
   // ----- JS / bytecode lifecycle.
   jobject execute(JNIEnv* env, jbyteArray byteCode, jstring fileName);
+  jobject executeMapped(JNIEnv* env, jstring path, jlong offset, jlong size,
+                        jstring fileName);
   jobject evaluate(JNIEnv* env, jstring source, jstring fileName);
   jbyteArray compile(JNIEnv* env, jstring source, jstring file,
                      jstring sourceMap);

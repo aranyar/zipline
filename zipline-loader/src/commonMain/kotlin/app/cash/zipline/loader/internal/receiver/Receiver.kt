@@ -16,6 +16,9 @@
 package app.cash.zipline.loader.internal.receiver
 
 import okio.ByteString
+import okio.FileSystem
+import okio.Path
+import okio.SYSTEM
 
 /**
  * After getting a [ByteString], [Receiver]s are iteratively called in order to handle.
@@ -30,4 +33,16 @@ internal interface Receiver {
     id: String,
     sha256: ByteString,
   )
+
+  /**
+   * Handle a file already on disk. Default copies it into RAM and calls [receive].
+   */
+  suspend fun receiveFile(
+    path: Path,
+    id: String,
+    sha256: ByteString,
+  ) {
+    val byteString = FileSystem.SYSTEM.read(path) { readByteString() }
+    receive(byteString, id, sha256)
+  }
 }

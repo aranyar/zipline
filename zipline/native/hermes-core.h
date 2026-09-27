@@ -40,6 +40,14 @@ facebook::jsi::Value HermesCore_evaluateBytecode(ContextBase* ctx,
                                                  size_t bytecodeSize,
                                                  const std::string& sourceURL);
 
+// mmap [offset, offset+size) of path (MAP_PRIVATE) and evaluate without copying
+// the HBC into malloc. Mapping is held by the RuntimeModule.
+facebook::jsi::Value HermesCore_evaluateMappedFile(ContextBase* ctx,
+                                                   const char* path,
+                                                   size_t offset,
+                                                   size_t size,
+                                                   const std::string& sourceURL);
+
 // Compile and evaluate JavaScript source directly in the runtime. Unlike
 // compile()+evaluateBytecode(), the in-memory debug info (scoping table,
 // sourceMappingURL magic comment) survives, so CDP frame eval works.

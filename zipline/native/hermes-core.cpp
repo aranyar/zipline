@@ -6,10 +6,16 @@
 #include <jsi/instrumentation.h>
 #include <jsi/jsi.h>
 
+#include <cerrno>
 #include <cstring>
+#include <fcntl.h>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <vector>
 
 namespace jsi = facebook::jsi;
@@ -77,6 +83,72 @@ void HermesCore_releaseContext(ContextBase* ctx) {
   if (ctx) {
     ctx->runtime.reset();
   }
+}
+
+namespace {
+
+class MmapFileBuffer final : public jsi::Buffer {
+ public:
+  MmapFileBuffer(const char* path, size_t offset, size_t length) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+      throw std::runtime_error(std::string("open failed: ") + path + ": " +
+                               std::strerror(errno));
+    }
+    struct stat st {};
+    if (fstat(fd, &st) < 0) {
+      int err = errno;
+      close(fd);
+      throw std::runtime_error(std::string("fstat failed: ") + path + ": " +
+                               std::strerror(err));
+    }
+    map_size_ = static_cast<size_t>(st.st_size);
+    if (offset > map_size_ || length > map_size_ - offset) {
+      close(fd);
+      throw std::runtime_error("mapped HBC range is outside the file");
+    }
+    // PROT_WRITE + MAP_PRIVATE so Hermes may patch opcodes (debugger) via COW
+    // without mutating the cache file.
+    map_ = mmap(nullptr, map_size_, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+    int err = errno;
+    close(fd);
+    if (map_ == MAP_FAILED) {
+      map_ = nullptr;
+      throw std::runtime_error(std::string("mmap failed: ") + path + ": " +
+                               std::strerror(err));
+    }
+    view_ = static_cast<uint8_t*>(map_) + offset;
+    view_size_ = length;
+  }
+
+  MmapFileBuffer(const MmapFileBuffer&) = delete;
+  MmapFileBuffer& operator=(const MmapFileBuffer&) = delete;
+  ~MmapFileBuffer() override {
+    if (map_ != nullptr && map_ != MAP_FAILED) {
+      munmap(map_, map_size_);
+    }
+  }
+
+  size_t size() const override { return view_size_; }
+  const uint8_t* data() const override { return view_; }
+
+ private:
+  void* map_ = nullptr;
+  size_t map_size_ = 0;
+  const uint8_t* view_ = nullptr;
+  size_t view_size_ = 0;
+};
+
+} // namespace
+
+jsi::Value HermesCore_evaluateMappedFile(ContextBase* ctx,
+                                         const char* path,
+                                         size_t offset,
+                                         size_t size,
+                                         const std::string& sourceURL) {
+  auto buffer = std::make_shared<MmapFileBuffer>(path, offset, size);
+  auto prepared = ctx->runtime->prepareJavaScript(buffer, sourceURL);
+  return ctx->runtime->evaluatePreparedJavaScript(prepared);
 }
 
 jsi::Value HermesCore_evaluateBytecode(ContextBase* ctx,
