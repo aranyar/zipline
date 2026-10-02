@@ -107,9 +107,7 @@ class MmapFileBuffer final : public jsi::Buffer {
       close(fd);
       throw std::runtime_error("mapped HBC range is outside the file");
     }
-    // PROT_WRITE + MAP_PRIVATE so Hermes may patch opcodes (debugger) via COW
-    // without mutating the cache file.
-    map_ = mmap(nullptr, map_size_, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+    map_ = mmap(nullptr, map_size_, PROT_READ, MAP_PRIVATE, fd, 0);
     int err = errno;
     close(fd);
     if (map_ == MAP_FAILED) {

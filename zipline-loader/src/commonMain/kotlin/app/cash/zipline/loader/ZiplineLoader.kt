@@ -663,25 +663,39 @@ class ZiplineLoader internal constructor(
             nowEpochMs = nowEpochMs,
           )?.let { return@withContext Fetched.File(it) }
 
-          val dest = FileSystem.SYSTEM_TEMPORARY_DIRECTORY /
-            "zipline-${module.sha256.hex()}.zipline"
-          val path = httpFetcher.fetchToFile(
-            applicationName = applicationName,
-            eventListener = eventListener,
-            baseUrl = baseUrl,
-            url = module.url,
-            dest = dest,
-          )
-          check(FileSystem.SYSTEM.fileSha256(path) == module.sha256) {
-            "checksum mismatch for $id"
+          if (httpFetcher.isFileDownloadEnabled) {
+            val dest = FileSystem.SYSTEM_TEMPORARY_DIRECTORY /
+              "zipline-${module.sha256.hex()}.zipline"
+            val path = httpFetcher.fetchToFile(
+              applicationName = applicationName,
+              eventListener = eventListener,
+              baseUrl = baseUrl,
+              url = module.url,
+              dest = dest,
+            )
+            check(FileSystem.SYSTEM.fileSha256(path) == module.sha256) {
+              "checksum mismatch for $id"
+            }
+            cachingFetcher?.storeFromPath(
+              applicationName = applicationName,
+              sha256 = module.sha256,
+              path = path,
+              nowEpochMs = nowEpochMs,
+            )
+            Fetched.File(path)
+          } else {
+            Fetched.Bytes(
+              httpFetcher.fetch(
+                applicationName = applicationName,
+                eventListener = eventListener,
+                id = id,
+                sha256 = module.sha256,
+                nowEpochMs = nowEpochMs,
+                baseUrl = baseUrl,
+                url = module.url,
+              ),
+            )
           }
-          cachingFetcher?.storeFromPath(
-            applicationName = applicationName,
-            sha256 = module.sha256,
-            path = path,
-            nowEpochMs = nowEpochMs,
-          )
-          Fetched.File(path)
         }
       }
       when (fetched) {

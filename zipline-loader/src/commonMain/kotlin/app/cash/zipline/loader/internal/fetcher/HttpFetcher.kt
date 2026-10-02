@@ -38,6 +38,9 @@ import okio.Path
 internal class HttpFetcher(
   private val httpClient: ZiplineHttpClient,
 ) : Fetcher<ByteString> {
+  val isFileDownloadEnabled: Boolean
+    get() = httpClient.isFileDownloadEnabled
+
   override suspend fun fetch(
     applicationName: String,
     eventListener: EventListener,

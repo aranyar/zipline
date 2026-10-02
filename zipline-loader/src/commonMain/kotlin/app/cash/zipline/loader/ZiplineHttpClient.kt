@@ -27,6 +27,12 @@ import okio.Path
 import okio.SYSTEM
 
 abstract class ZiplineHttpClient {
+  /**
+   * When true, [ZiplineLoader] downloads a module with [downloadToFile].
+   * When false, it downloads the module into memory with [download].
+   */
+  open val isFileDownloadEnabled: Boolean = true
+
   abstract suspend fun download(
     url: String,
     requestHeaders: List<Pair<String, String>>,
