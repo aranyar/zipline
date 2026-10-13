@@ -15,6 +15,8 @@
  */
 #include "InboundCallChannel.h"
 
+#include <stdexcept>
+
 #include <jsi/jsi.h>
 
 namespace jsi = facebook::jsi;
@@ -58,6 +60,9 @@ std::string InboundCallChannel::call(ContextBase* context, const std::string& ca
   // A platform exception thrown from inside guest code is already pending (routine on the
   // direct-event path); calling into the platform again would abort the VM.
   if (context->hasPendingPlatformException()) return "";
+  // TEMP-TEST-THROW remove before merge
+  // It's impossible to catch c++ exceptions in JNI without try-catch in c++ :(
+//  throw std::runtime_error("TEMP-TEST-THROW InboundCallChannel::call");
   jsi::Value result;
   try {
     result = invokeServiceMethod(context, name_, "call", callJson);

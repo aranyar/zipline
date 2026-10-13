@@ -31,6 +31,9 @@ fun registerBridgeInitHook(hook: () -> Unit) {
 }
 
 fun registerBridge(fqn: String, fn: CPointer<CFunction<(COpaquePointer?, Int) -> COpaquePointer?>>) {
+  // TEMP-TEST-THROW remove before merge
+  // crash on ios :(
+  // throw IllegalStateException("TEMP-TEST-THROW JsEngine.registerBridge")
   @Suppress("UNCHECKED_CAST")
   HermesBridge_addBridgeEntry(fqn, fn as COpaquePointer)
 }
@@ -52,6 +55,9 @@ private fun <V> AtomicReference<Map<Long, V>>.removeValue(key: Long) {
 
 @Suppress("UNCHECKED_CAST")
 private fun outboundChannelCallCallback(context: COpaquePointer?, callJson: CPointer<ByteVar>?): CPointer<ByteVar>? {
+    // TEMP-TEST-THROW remove before merge
+    // CAUGHT OK
+    // throw IllegalStateException("TEMP-TEST-THROW JsEngine.outboundChannelCallCallback")
     val channel = outboundChannels.load()[context?.rawValue?.toLong() ?: return null] ?: return null
     val callJsonStr = callJson?.toKString() ?: return null
     val result: String = channel.call(callJsonStr)
@@ -269,6 +275,9 @@ actual class JsEngine private constructor(
 
   actual companion object {
     actual fun create(): JsEngine {
+      // TEMP-TEST-THROW remove before merge
+      // CAUGHT OK
+      // throw IllegalStateException("TEMP-TEST-THROW JsEngine.create")
       // CDP debugging compiles eagerly so breakpoints bind in
       // runtime-compiled source (lazy functions have no code blocks yet).
       val debugging = app.cash.zipline.internal.cdp.cdpDebugPort() != null

@@ -21,7 +21,12 @@ internal class JniCallChannel(
   private val jsEngine: JsEngine,
   private val instance: Long,
 ) : CallChannel {
-  override fun call(callJson: String) = call(jsEngine.context, instance, callJson)
+  override fun call(callJson: String): String {
+    // TEMP-TEST-THROW remove before merge. Same host→guest call, below Zipline.outboundChannel.call.
+    // CAUGHT OK
+//    throw IllegalStateException("TEMP-TEST-THROW JniCallChannel.call")
+    return call(jsEngine.context, instance, callJson)
+  }
 
   private external fun call(
     context: Long,

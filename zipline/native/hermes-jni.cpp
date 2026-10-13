@@ -63,6 +63,14 @@ bool checkContextAndJsThread(JNIEnv* env, ContextJni* ctx) {
 extern "C" JNIEXPORT jlong JNICALL
 Java_app_cash_zipline_JsEngine_createContext(JNIEnv* env, jclass /*clazz*/,
                                              jboolean forceEagerCompilation) {
+//#ifdef HERMESVM_LEAN
+  // TEMP-TEST-THROW remove before merge. Lean only: the zipline server links
+  // the full (non-lean) JNI library and must keep creating contexts.
+  // CAUGHT OK
+//  throwJavaException(env, "java/lang/IllegalStateException",
+//                     "TEMP-TEST-THROW JsEngine.createContext");
+//  return 0L;
+//#endif
   ContextJni* c = new (std::nothrow) ContextJni(env, forceEagerCompilation == JNI_TRUE);
   if (!c) {
     throwJavaException(env, "java/lang/OutOfMemoryError",

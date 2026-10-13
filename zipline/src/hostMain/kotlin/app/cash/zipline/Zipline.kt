@@ -62,6 +62,9 @@ actual class Zipline private constructor(
       }
 
       override fun call(callJson: String): String {
+        // TEMP-TEST-THROW remove before merge. First host→guest call (getAppLifecycle).
+        // CAUGHT OK
+        // throw IllegalStateException("TEMP-TEST-THROW Zipline.outboundChannel.call")
         check(scope.isActive) { "Zipline closed" }
         return jsInboundBridge.call(callJson)
       }
@@ -231,6 +234,8 @@ actual class Zipline private constructor(
       serializersModule: SerializersModule = EmptySerializersModule(),
       eventListener: EventListener = EventListener.NONE,
     ): Zipline {
+      // TEMP-TEST-THROW remove before merge
+      // throw IllegalStateException("TEMP-TEST-THROW Zipline.create") // caught OK
       val jsEngine = JsEngine.create()
       initModuleLoader(jsEngine)
 

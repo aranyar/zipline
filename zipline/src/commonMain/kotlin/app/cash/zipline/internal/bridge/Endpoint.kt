@@ -93,6 +93,9 @@ internal class Endpoint internal constructor(
 
   val inboundChannel = object : CallChannel {
     override fun call(callJson: String): String {
+      // TEMP-TEST-THROW remove before merge. Guest→host, after the outbound throws above are removed.
+      // CAUGHT OK
+//      throw IllegalStateException("TEMP-TEST-THROW Endpoint.inboundChannel.call")
       val internalCall = callCodec.decodeCall(callJson)
       val inboundService = internalCall.inboundService!!
       val externalCall = callCodec.lastInboundCall!!
