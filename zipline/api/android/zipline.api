@@ -96,16 +96,16 @@ public final class app/cash/zipline/JsEngine : java/io/Closeable, java/lang/Auto
 	public final fun getMaxStackSize ()J
 	public final fun getMemoryLimit ()J
 	public final fun getMemoryUsage ()Lapp/cash/zipline/MemoryUsage;
-	public final fun getRdmaChangeSink ()Lapp/cash/zipline/RdmaChangeSink;
+	public final fun getDirectChangeSink ()Lapp/cash/zipline/DirectChangeSink;
 	public final fun hasGlobalFunction (Ljava/lang/String;)Z
-	public final fun initRdmaChangesChannel ()V
+	public final fun initDirectChangesChannel ()V
 	public final fun installModuleLoader ()V
 	public final fun setGcThreshold (J)V
 	public final fun setGlobalProperty (Ljava/lang/String;Ljava/lang/String;)V
 	public final fun setInterruptHandler (Lapp/cash/zipline/InterruptHandler;)V
 	public final fun setMaxStackSize (J)V
 	public final fun setMemoryLimit (J)V
-	public final fun setRdmaChangeSink (Lapp/cash/zipline/RdmaChangeSink;)V
+	public final fun setDirectChangeSink (Lapp/cash/zipline/DirectChangeSink;)V
 	public final fun startHeapSampling (J)V
 	public static synthetic fun startHeapSampling$default (Lapp/cash/zipline/JsEngine;JILjava/lang/Object;)V
 	public final fun stopHeapSampling (Ljava/lang/String;)Z
@@ -159,7 +159,7 @@ public final class app/cash/zipline/MemoryUsage {
 	public fun toString ()Ljava/lang/String;
 }
 
-public abstract interface class app/cash/zipline/RdmaChangeSink {
+public abstract interface class app/cash/zipline/DirectChangeSink {
 	public abstract fun createAdd (IIII)V
 	public abstract fun createBridgeChange (ILjava/lang/Object;)V
 	public abstract fun createCreate (II)V
@@ -190,7 +190,7 @@ public final class app/cash/zipline/Zipline : java/lang/AutoCloseable {
 	public final fun getJsEngine ()Lapp/cash/zipline/JsEngine;
 	public final fun getJson ()Lkotlinx/serialization/json/Json;
 	public final fun getOrPutAttachment (Lkotlin/reflect/KClass;Lkotlin/jvm/functions/Function0;)Ljava/lang/Object;
-	public final fun initRdmaChannel (Lapp/cash/zipline/RdmaChangeSink;)V
+	public final fun initDirectChannel (Lapp/cash/zipline/DirectChangeSink;)V
 	public final fun loadJsModule (Ljava/lang/String;Ljava/lang/String;)V
 	public final fun loadJsModule ([BLjava/lang/String;)V
 	public final fun take (Ljava/lang/String;Lapp/cash/zipline/ZiplineScope;)Lapp/cash/zipline/ZiplineService;
