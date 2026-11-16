@@ -25,6 +25,7 @@ val bridgeNativeOutputDir = layout.buildDirectory.dir("generated/bridge/native")
 val generatedGuestDir = layout.buildDirectory.dir("generated/guest")
 val bridgeObjDir = layout.buildDirectory.dir("generated/bridge/obj")
 val isMac = System.getProperty("os.name").contains("mac", ignoreCase = true)
+val isWindows = System.getProperty("os.name").contains("windows", ignoreCase = true)
 val bridgeSoFile = layout.buildDirectory.file(
   if (isMac) "generated/bridge/libbridgetests.dylib" else "generated/bridge/libbridgetests.so",
 )
@@ -48,14 +49,16 @@ kotlin {
     }
   }
 
-  macosArm64 {
-    binaries.all {
-      linkerOpts += listOf(
-        "-L${rootDir}/zipline/build/hermes-jni/macos-arm64",
-        "-lhermesvm",
-        "-lsqlite3",
-        "-rpath", "${rootDir}/zipline/build/hermes-jni/macos-arm64",
-      )
+  if (isMac) {
+    macosArm64 {
+      binaries.all {
+        linkerOpts += listOf(
+          "-L${rootDir}/zipline/build/hermes-jni/macos-arm64",
+          "-lhermesvm",
+          "-lsqlite3",
+          "-rpath", "${rootDir}/zipline/build/hermes-jni/macos-arm64",
+        )
+      }
     }
   }
 
@@ -77,11 +80,13 @@ kotlin {
         implementation(projects.zipline)
       }
     }
-    val nativeMain by getting {
-      dependencies {
-        implementation(projects.zipline)
+    if (isMac) {
+      val nativeMain by getting {
+        dependencies {
+          implementation(projects.zipline)
+        }
+        kotlin.srcDir(bridgeNativeOutputDir)
       }
-      kotlin.srcDir(bridgeNativeOutputDir)
     }
     val jsMain by getting {
       dependencies {
@@ -103,10 +108,12 @@ kotlin {
         implementation(projects.ziplineLoader)
       }
     }
-    val nativeTest by getting {
-      dependencies {
-        // Same as jvmTest: the native host parses the ZiplineFile container too.
-        implementation(projects.ziplineLoader)
+    if (isMac) {
+      val nativeTest by getting {
+        dependencies {
+          // Same as jvmTest: the native host parses the ZiplineFile container too.
+          implementation(projects.ziplineLoader)
+        }
       }
     }
   }
@@ -242,12 +249,20 @@ tasks {
   }
 
   named<Test>("jvmTest") {
-    dependsOn(linkBridgeSo)
-    systemProperty("bridgeTestSoPath", bridgeSoFile.get().asFile.absolutePath)
+    // The bridge .so is linked with -undefined,dynamic_lookup and expects the
+    // process-wide libhermesvm already loaded. Windows DLL imports cannot do
+    // that, so the integration test is skipped there.
+    if (!isWindows) {
+      dependsOn(linkBridgeSo)
+      systemProperty("bridgeTestSoPath", bridgeSoFile.get().asFile.absolutePath)
+    }
+    enabled = !isWindows
   }
 
-  named("macosArm64Test") {
-    dependsOn(":zipline:buildHermesHostMacosArm64")
+  if (isMac) {
+    named("macosArm64Test") {
+      dependsOn(":zipline:buildHermesHostMacosArm64")
+    }
   }
 
   // commonTest sources include the generated guest bytecode; wire the dependency explicitly

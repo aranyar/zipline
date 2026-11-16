@@ -42,7 +42,9 @@ elseif(JAVA_HOME AND EXISTS "${JAVA_HOME}/include/jni.h")
   # (for Linux hosts). When cross-compiling from macOS to Linux the JDK
   # we invoke is still the macOS one, so accept whichever directory exists
   # (darwin first, linux second) so the jni_md.h macro-only header resolves.
-  if(APPLE AND EXISTS "${JAVA_HOME}/include/darwin")
+  if(WIN32 AND EXISTS "${JAVA_HOME}/include/win32")
+    list(APPEND JNI_INCLUDE_DIRS "${JAVA_HOME}/include/win32")
+  elseif(APPLE AND EXISTS "${JAVA_HOME}/include/darwin")
     list(APPEND JNI_INCLUDE_DIRS "${JAVA_HOME}/include/darwin")
   elseif(EXISTS "${JAVA_HOME}/include/linux")
     list(APPEND JNI_INCLUDE_DIRS "${JAVA_HOME}/include/linux")
@@ -375,6 +377,102 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
       endif()
     endif()
   endif()
+
+elseif(WIN32)
+  # ---- Windows host (hermesvm.dll) ----
+  # Hermes is built in this same tree so archive names stay on CMake's side of
+  # the MSVC / MinGW split. The shared hermesvm target from upstream uses GNU
+  # --whole-archive, so the DLL we ship is hermesvm_jni (OUTPUT_NAME hermesvm).
+  set(HERMES_ENABLE_TEST_SUITE OFF)
+  set(HERMES_ENABLE_TOOLS OFF)
+  set(HERMES_ENABLE_INTL FALSE)
+  set(HERMES_UNICODE_LITE TRUE)
+  set(HERMES_BUILD_SHARED_JSI OFF)
+  set(HERMES_BUILD_APPLE_FRAMEWORK OFF)
+  set(HERMESVM_LEAN OFF CACHE BOOL "" FORCE)
+  if(NOT DEFINED HERMES_ENABLE_DEBUGGER)
+    set(HERMES_ENABLE_DEBUGGER ON)
+  endif()
+  set(JSI_DIR "${HERMES_SRC}/API/jsi")
+  set(HERMES_ENABLE_UNICODE_REGEXP_PROPERTY_ESCAPES OFF)
+
+  if(NOT DEFINED IMPORT_HOST_COMPILERS)
+    message(FATAL_ERROR
+      "IMPORT_HOST_COMPILERS not set. The Gradle preBuildHermesHost task should "
+      "have produced native/hermes/build_host_hermesc/ImportHostCompilers.cmake.")
+  endif()
+  file(TO_CMAKE_PATH "${IMPORT_HOST_COMPILERS}" IMPORT_HOST_COMPILERS_CMAKE)
+  set(IMPORT_HOST_COMPILERS "${IMPORT_HOST_COMPILERS_CMAKE}" CACHE FILEPATH "")
+
+  if(MSVC)
+    # Static CRT so java.exe can load the DLL without a matching VC redist,
+    # and POSIX names (strdup) that the glue and Hermes call.
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_DEPRECATE NOMINMAX)
+    add_compile_options(/utf-8)
+  endif()
+
+  set(_hermes_subdir "${CMAKE_CURRENT_BINARY_DIR}/_hermes")
+  file(MAKE_DIRECTORY "${_hermes_subdir}")
+  add_subdirectory("${HERMES_SRC}" "${_hermes_subdir}")
+
+  if(TARGET hermesvm)
+    set_target_properties(hermesvm PROPERTIES EXCLUDE_FROM_ALL TRUE)
+  endif()
+  if(TARGET hermesvmlean)
+    set_target_properties(hermesvmlean PROPERTIES EXCLUDE_FROM_ALL TRUE)
+  endif()
+
+  add_library(hermesvm_jni SHARED ${GLUE_CORE_SOURCES} ${GLUE_JNI_SOURCES})
+  if(MSVC)
+    target_sources(hermesvm_jni PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/hermesvm.def")
+  endif()
+  target_include_directories(hermesvm_jni PRIVATE
+    ${_GLUE_INCLUDES}
+    "${_hermes_subdir}/external/llvh/include")
+  if(HERMES_ENABLE_DEBUGGER)
+    target_compile_definitions(hermesvm_jni PRIVATE HERMES_ENABLE_DEBUGGER=1)
+  endif()
+  if(MSVC)
+    # LINK_LIBRARY keeps the static archives' usage requirements and pulls in
+    # every object. Linking the same .lib again next to /WHOLEARCHIVE duplicates
+    # symbols (LNK2005).
+    if(CMAKE_VERSION VERSION_LESS 3.24)
+      message(FATAL_ERROR "The Windows host build needs CMake 3.24 or newer.")
+    endif()
+    target_link_libraries(hermesvm_jni PRIVATE
+      "$<LINK_LIBRARY:WHOLE_ARCHIVE,hermesvm_a>"
+      "$<LINK_LIBRARY:WHOLE_ARCHIVE,jsi>"
+      "$<LINK_LIBRARY:WHOLE_ARCHIVE,boost_context>"
+      psapi
+      bcrypt
+      ws2_32
+      synchronization
+      dbghelp
+      shlwapi)
+  else()
+    target_link_libraries(hermesvm_jni PRIVATE
+      "-Wl,--whole-archive"
+      hermesvm_a
+      jsi
+      boost_context
+      "-Wl,--no-whole-archive"
+      psapi
+      bcrypt
+      ws2_32
+      synchronization
+      dbghelp
+      shlwapi)
+  endif()
+  set_target_properties(hermesvm_jni PROPERTIES
+    OUTPUT_NAME hermesvm
+    PREFIX ""
+    SUFFIX ".dll"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_CURRENT_BINARY_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_CURRENT_BINARY_DIR}")
 
 elseif(DEFINED HERMES_STATIC_BUILD_DIR)
   # ---- macOS/Linux host build with prebuilt static libs ----

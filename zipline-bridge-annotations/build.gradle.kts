@@ -13,15 +13,17 @@ kotlin {
     nodejs()
   }
 
-  linuxX64()
-  macosX64()
-  macosArm64()
-  iosArm64()
-  iosX64()
-  iosSimulatorArm64()
-  tvosArm64()
-  tvosSimulatorArm64()
-  tvosX64()
+  if (ZiplineHost.canBuildLinuxNative) linuxX64()
+  if (ZiplineHost.canBuildApple) {
+    macosX64()
+    macosArm64()
+    iosArm64()
+    iosX64()
+    iosSimulatorArm64()
+    tvosArm64()
+    tvosSimulatorArm64()
+    tvosX64()
+  }
 
   applyDefaultHierarchyTemplate()
 

@@ -295,12 +295,16 @@ internal open class ZiplineDevelopmentServer internal constructor(
     }
 
     private fun findAdb(): String? {
-      val fromEnv = System.getenv("ANDROID_HOME")?.let { "$it/platform-tools/adb" }
-        ?: System.getenv("ANDROID_SDK_ROOT")?.let { "$it/platform-tools/adb" }
+      val windows = System.getProperty("os.name").lowercase().contains("windows")
+      val exe = if (windows) "adb.exe" else "adb"
+      val fromEnv = System.getenv("ANDROID_HOME")?.let { "$it/platform-tools/$exe" }
+        ?: System.getenv("ANDROID_SDK_ROOT")?.let { "$it/platform-tools/$exe" }
       if (fromEnv != null && File(fromEnv).exists()) return fromEnv
+      val locator = if (windows) listOf("where.exe", "adb") else listOf("which", "adb")
       return runCatching {
-        ProcessBuilder("which", "adb").start().inputStream.bufferedReader().readText().trim()
-          .takeIf { it.isNotEmpty() && File(it).exists() }
+        ProcessBuilder(locator).start().inputStream.bufferedReader().readLines()
+          .map { it.trim() }
+          .firstOrNull { it.isNotEmpty() && File(it).exists() }
       }.getOrNull()
     }
   }

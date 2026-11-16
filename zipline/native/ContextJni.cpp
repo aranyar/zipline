@@ -23,6 +23,12 @@
 #include "OutboundCallChannelJni.h"
 #include "bridge_dispatch.h"
 
+#if defined(_MSC_VER)
+#define ZIPLINE_KEEP_EXPORT __declspec(dllexport)
+#else
+#define ZIPLINE_KEEP_EXPORT __attribute__((used, visibility("default")))
+#endif
+
 
 #include <vector>
 #include <string>
@@ -49,21 +55,21 @@ jsi::Object globalBridgeMap(jsi::Runtime &rt, const char *name) {
 
 }  // namespace
 
-extern "C" __attribute__((used, visibility("default"))) void addBridgeEntry(const char* fq, jobject(*fn)(JNIEnv*,jsi::Runtime&,const jsi::Value&)) {
+extern "C" ZIPLINE_KEEP_EXPORT void addBridgeEntry(const char* fq, jobject(*fn)(JNIEnv*,jsi::Runtime&,const jsi::Value&)) {
     bridgeTable.push_back({fq, fn});
 }
 
-extern "C" __attribute__((used, visibility("default"))) void addBridgeInit(void(*fn)(JNIEnv*)) {
+extern "C" ZIPLINE_KEEP_EXPORT void addBridgeInit(void(*fn)(JNIEnv*)) {
     bridgeInits.push_back(fn);
 }
 
-extern "C" __attribute__((used, visibility("default"))) void init_all(JNIEnv* env) {
+extern "C" ZIPLINE_KEEP_EXPORT void init_all(JNIEnv* env) {
     for (auto& fn : bridgeInits) {
         fn(env);
     }
 }
 
-extern "C" __attribute__((used, visibility("default"))) void register_all(jsi::Runtime& rt) {
+extern "C" ZIPLINE_KEEP_EXPORT void register_all(jsi::Runtime& rt) {
     auto bridgeRegisterFn = jsi::Function::createFromHostFunction(
         rt,
         jsi::PropNameID::forUtf8(rt, "__bridgeRegister"),

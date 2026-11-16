@@ -1,12 +1,26 @@
 #include <jsi/jsi.h>
 #include <stdint.h>
 #include <stdbool.h>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 
 #define META_EMPTY 0x80
 #define META_DELETED 0xFE
 #define META_SENTINEL 0xFF
 
 namespace jsi = facebook::jsi;
+
+// Count trailing zeros. The callers only pass a non-zero mask.
+static inline int32_t countr_zero_u64(uint64_t value) {
+#if defined(_MSC_VER)
+  unsigned long index = 0;
+  _BitScanForward64(&index, value);
+  return static_cast<int32_t>(index);
+#else
+  return __builtin_ctzll(value);
+#endif
+}
 
 // Read a single int32_t element from an array-like value.
 // This is the JSI-compatible way to access array elements.
@@ -144,7 +158,7 @@ static int32_t find_first_available_slot(jsi::Runtime& rt, const jsi::Value& met
     }
     uint64_t m = mask_empty_or_deleted(g);
     if (m != 0) {
-      int32_t bitIdx = __builtin_ctzll(m);
+      int32_t bitIdx = countr_zero_u64(m);
       int32_t byteInGroup = bitIdx >> 3;
       *ok = true;
       return (probeOffset + byteInGroup) & mask;
@@ -177,7 +191,7 @@ static jsi::Value c_intset_find(jsi::Runtime& rt, const jsi::Value& this_val,
     }
     uint64_t m = match_hash2(g, hash2);
     while (m != 0) {
-      int32_t bitIdx = __builtin_ctzll(m);
+      int32_t bitIdx = countr_zero_u64(m);
       int32_t byteInGroup = bitIdx >> 3;
       int32_t index = (probeOffset + byteInGroup) & mask;
       jsi::Value slotVal = args[1].asObject(rt).getProperty(rt, index);
@@ -221,7 +235,7 @@ static jsi::Value c_intset_find_slot(jsi::Runtime& rt, const jsi::Value& this_va
     }
     uint64_t m = match_hash2(g, hash2);
     while (m != 0) {
-      int32_t bitIdx = __builtin_ctzll(m);
+      int32_t bitIdx = countr_zero_u64(m);
       int32_t byteInGroup = bitIdx >> 3;
       int32_t index = (probeOffset + byteInGroup) & mask;
       int32_t slotInt;
@@ -271,7 +285,7 @@ static jsi::Value c_intset_remove(jsi::Runtime& rt, const jsi::Value& this_val,
     }
     uint64_t m = match_hash2(g, hash2);
     while (m != 0) {
-      int32_t bitIdx = __builtin_ctzll(m);
+      int32_t bitIdx = countr_zero_u64(m);
       int32_t byteInGroup = bitIdx >> 3;
       int32_t index = (probeOffset + byteInGroup) & mask;
       jsi::Value slotVal = args[1].asObject(rt).getProperty(rt, index);
@@ -322,7 +336,7 @@ static jsi::Value c_int_object_map_find(jsi::Runtime& rt, const jsi::Value& this
     }
     uint64_t m = match_hash2(g, hash2);
     while (m != 0) {
-      int32_t bitIdx = __builtin_ctzll(m);
+      int32_t bitIdx = countr_zero_u64(m);
       int32_t byteInGroup = bitIdx >> 3;
       int32_t index = (probeOffset + byteInGroup) & mask;
       jsi::Value slotVal = args[1].asObject(rt).getProperty(rt, index);
@@ -366,7 +380,7 @@ static jsi::Value c_int_object_map_find_slot(jsi::Runtime& rt, const jsi::Value&
     }
     uint64_t m = match_hash2(g, hash2);
     while (m != 0) {
-      int32_t bitIdx = __builtin_ctzll(m);
+      int32_t bitIdx = countr_zero_u64(m);
       int32_t byteInGroup = bitIdx >> 3;
       int32_t index = (probeOffset + byteInGroup) & mask;
       jsi::Value slotVal = args[1].asObject(rt).getProperty(rt, index);
@@ -416,7 +430,7 @@ static jsi::Value c_int_object_map_put(jsi::Runtime& rt, const jsi::Value& this_
     }
     uint64_t m = match_hash2(g, hash2);
     while (m != 0) {
-      int32_t bitIdx = __builtin_ctzll(m);
+      int32_t bitIdx = countr_zero_u64(m);
       int32_t byteInGroup = bitIdx >> 3;
       int32_t index = (probeOffset + byteInGroup) & mask;
       jsi::Value slotVal = args[1].asObject(rt).getProperty(rt, index);
@@ -436,7 +450,7 @@ static jsi::Value c_int_object_map_put(jsi::Runtime& rt, const jsi::Value& this_
     }
     if (any_empty(g)) {
       // Found empty slot, insert here
-      int32_t bitIdx = __builtin_ctzll(mask_empty(g));
+      int32_t bitIdx = countr_zero_u64(mask_empty(g));
       int32_t byteInGroup = bitIdx >> 3;
       int32_t index = (probeOffset + byteInGroup) & mask;
       if (!write_metadata_byte(rt, args[0], index, static_cast<uint8_t>(hash2))) {
@@ -476,7 +490,7 @@ static jsi::Value c_int_object_map_remove(jsi::Runtime& rt, const jsi::Value& th
     }
     uint64_t m = match_hash2(g, hash2);
     while (m != 0) {
-      int32_t bitIdx = __builtin_ctzll(m);
+      int32_t bitIdx = countr_zero_u64(m);
       int32_t byteInGroup = bitIdx >> 3;
       int32_t index = (probeOffset + byteInGroup) & mask;
       jsi::Value slotVal = args[1].asObject(rt).getProperty(rt, index);
@@ -519,7 +533,7 @@ static jsi::Value c_int_object_map_find_available_slot(jsi::Runtime& rt, const j
     }
     uint64_t m = mask_empty_or_deleted(g);
     if (m != 0) {
-      int32_t bitIdx = __builtin_ctzll(m);
+      int32_t bitIdx = countr_zero_u64(m);
       int32_t byteInGroup = bitIdx >> 3;
       int32_t result = (probeOffset + byteInGroup) & mask;
       return jsi::Value(result);
@@ -667,7 +681,13 @@ static jsi::Value c_get_string_hash_code(jsi::Runtime& rt, const jsi::Value& thi
   return jsi::Value(hash);
 }
 
-extern "C" __attribute__((visibility("default"))) void js_register_intrinsics(void* runtime) {
+#if defined(_MSC_VER)
+#define ZIPLINE_EXPORT_C
+#else
+#define ZIPLINE_EXPORT_C __attribute__((visibility("default")))
+#endif
+
+extern "C" ZIPLINE_EXPORT_C void js_register_intrinsics(void* runtime) {
   jsi::Runtime& rt = *static_cast<jsi::Runtime*>(runtime);
   jsi::Object globalThis = rt.global();
 

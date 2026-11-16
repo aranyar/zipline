@@ -8,6 +8,8 @@ plugins {
   id("io.github.tret9.zipline")
 }
 
+val isWindows = System.getProperty("os.name").lowercase().contains("windows")
+
 kotlin {
   androidTarget()
 
@@ -16,9 +18,11 @@ kotlin {
     binaries.executable()
   }
 
-  iosArm64()
-  iosX64()
-  iosSimulatorArm64()
+  if (!isWindows) {
+    iosArm64()
+    iosX64()
+    iosSimulatorArm64()
+  }
 
   applyDefaultHierarchyTemplate()
 
@@ -42,8 +46,10 @@ kotlin {
         implementation(libs.okHttp.core)
       }
     }
-    val iosMain by getting {
-      dependsOn(hostMain)
+    if (!isWindows) {
+      val iosMain by getting {
+        dependsOn(hostMain)
+      }
     }
   }
 }
