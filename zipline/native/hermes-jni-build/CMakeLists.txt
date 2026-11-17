@@ -447,6 +447,7 @@ elseif(WIN32)
       psapi
       bcrypt
       ws2_32
+      winmm
       synchronization
       dbghelp
       shlwapi)
@@ -460,6 +461,7 @@ elseif(WIN32)
       psapi
       bcrypt
       ws2_32
+      winmm
       synchronization
       dbghelp
       shlwapi)

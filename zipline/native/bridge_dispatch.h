@@ -50,6 +50,20 @@ static inline std::string jsiClassOf(facebook::jsi::Runtime &rt, const facebook:
   return name.isString() ? name.asString(rt).utf8(rt) : "";
 }
 
+// MSVC treats __declspec(dllexport) as part of the linkage. The definition in
+// ContextJni.cpp exports these symbols, so the earlier declaration must carry
+// the same attribute or the compiler reports C2375. Consumer TUs that only
+// call them leave ZIPLINE_BUILDING_JNI undefined.
+#if defined(_MSC_VER)
+#if defined(ZIPLINE_BUILDING_JNI)
+#define ZIPLINE_BRIDGE_API __declspec(dllexport)
+#else
+#define ZIPLINE_BRIDGE_API
+#endif
+#else
+#define ZIPLINE_BRIDGE_API __attribute__((visibility("default")))
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -59,16 +73,16 @@ typedef struct JniBridgeDispatch {
 } JniBridgeDispatch;
 
 /** Register a JNI init function (caches class/method refs on JVM thread). */
-void addBridgeInit(void (*fn)(JNIEnv* env));
+ZIPLINE_BRIDGE_API void addBridgeInit(void (*fn)(JNIEnv* env));
 
 /** Register a bridge FQN → converter mapping. */
-void addBridgeEntry(const char* fq, jobject (*fn)(JNIEnv *env, facebook::jsi::Runtime& rt, const facebook::jsi::Value& jsObj));
+ZIPLINE_BRIDGE_API void addBridgeEntry(const char* fq, jobject (*fn)(JNIEnv *env, facebook::jsi::Runtime& rt, const facebook::jsi::Value& jsObj));
 
 /** Run all registered JNI init functions. */
-void init_all(JNIEnv* env);
+ZIPLINE_BRIDGE_API void init_all(JNIEnv* env);
 
 /** Install __bridgeRegister on global. */
-void register_all(facebook::jsi::Runtime& rt);
+ZIPLINE_BRIDGE_API void register_all(facebook::jsi::Runtime& rt);
 
 #ifdef __cplusplus
 }

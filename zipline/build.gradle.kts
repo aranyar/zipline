@@ -531,12 +531,11 @@ fun configureAndBuildCmake(
     script.writeText(
       buildString {
         appendLine("@echo off")
-        appendLine("call ${quoteCmdArg(vcvars)}")
-        appendLine("if errorlevel 1 exit /b 1")
-        appendLine(configure.joinToString(" ") { quoteCmdArg(it) })
-        appendLine("if errorlevel 1 exit /b 1")
-        appendLine(build.joinToString(" ") { quoteCmdArg(it) })
-        appendLine("if errorlevel 1 exit /b 1")
+        // `if errorlevel 1` is a signed compare, so it treats ninja's
+        // 0xFFFFFFFF failure as success. `|| exit` catches every non-zero code.
+        appendLine("call ${quoteCmdArg(vcvars)} || exit /b 1")
+        appendLine(configure.joinToString(" ") { quoteCmdArg(it) } + " || exit /b 1")
+        appendLine(build.joinToString(" ") { quoteCmdArg(it) } + " || exit /b 1")
       },
     )
     cmakeRunner.execOperations.exec {
