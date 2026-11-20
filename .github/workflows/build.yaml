@@ -100,8 +100,11 @@ jobs:
           ninja --version
 
       # Configuring the Android plugin needs a compile SDK even though this job
-      # does not build the Android .so files.
+      # does not build the Android .so files. The action's default package list
+      # still includes "tools", which sdkmanager no longer ships.
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       - name: Install Android compile SDK
         shell: pwsh
