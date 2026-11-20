@@ -15,6 +15,7 @@ import org.jetbrains.kotlin.konan.target.Architecture
 import org.jetbrains.kotlin.konan.target.Family
 import org.jetbrains.kotlin.konan.target.KonanTarget
 import javax.inject.Inject
+import org.gradle.api.file.DuplicatesStrategy
 import org.gradle.api.file.FileTree
 import org.gradle.api.publish.maven.MavenPublication
 import org.gradle.process.ExecOperations
@@ -374,10 +375,23 @@ fun windowsJdkHomes(): List<String> {
     File("C:/Program Files/Microsoft"),
     File("C:/Program Files/Android/Android Studio/jbr"),
   )
-  return roots.flatMap { root ->
+  val homes = roots.flatMap { root ->
     if (!root.exists()) emptyList()
-    else listOf(root.path) + (root.listFiles()?.map { it.path } ?: emptyList())
+    else listOf(root) + (root.listFiles()?.toList() ?: emptyList())
   }
+  return homes.sortedWith(::compareJdkHomes).map { it.path }
+}
+
+/** Newest JDK directory first. listFiles() order is not a version order. */
+fun compareJdkHomes(a: File, b: File): Int {
+  val av = Regex("\\d+").findAll(a.name).map { it.value.toInt() }.toList()
+  val bv = Regex("\\d+").findAll(b.name).map { it.value.toInt() }.toList()
+  val count = maxOf(av.size, bv.size)
+  for (i in 0 until count) {
+    val difference = bv.getOrElse(i) { 0 }.compareTo(av.getOrElse(i) { 0 })
+    if (difference != 0) return difference
+  }
+  return a.name.compareTo(b.name)
 }
 
 // Helper: pick up JAVA_HOME from the environment if it has JNI headers
@@ -426,12 +440,9 @@ fun commandExists(name: String): Boolean = try {
   false
 }
 
+/** Quote one argument of the generated .cmd file. cmd expands % even inside quotes. */
 fun quoteCmdArg(arg: String): String =
-  if (arg.any { it.isWhitespace() || it == '"' || it == '&' }) {
-    "\"" + arg.replace("\"", "\"\"") + "\""
-  } else {
-    arg
-  }
+  "\"" + arg.replace("%", "%%").replace("\"", "\"\"") + "\""
 
 /** ninja from PATH, or the copy shipped with the Android SDK CMake package. */
 fun findNinjaExecutable(): String? {
@@ -483,10 +494,10 @@ fun findVcVarsBat(): String? {
 }
 
 /**
- * Configure and build with Ninja. On Windows, if cl/clang/g++ are not already
- * on PATH, run them from a vcvars prompt so the generated ImportHostCompilers
- * file points at a single-config hermesc.exe (multi-config VS layouts break
- * the Android cross-build's imported compiler).
+ * Configure and build with Ninja. On Windows, always go through vcvars64 so
+ * CMake sees the x64 MSVC toolchain. A g++ or clang++ already on PATH is not
+ * a toolchain this build can link, and a 32-bit cl from a developer prompt
+ * would stage an x86 DLL as amd64.
  */
 interface CmakeRunner {
   @get:Inject
@@ -519,8 +530,7 @@ fun configureAndBuildCmake(
   val build = mutableListOf(cmake, "--build", binaryDir.absolutePath, "-j", jobs)
   targets.forEach { build += listOf("--target", it) }
 
-  val compilerOnPath = commandExists("cl") || commandExists("clang++") || commandExists("g++")
-  if (ZiplineHost.isWindows && !compilerOnPath) {
+  if (ZiplineHost.isWindows) {
     val vcvars = findVcVarsBat()
       ?: error(
         "Visual Studio C++ tools were not found. Install Visual Studio 2022 or newer with the " +
@@ -561,7 +571,20 @@ val preBuildHermesHost: TaskProvider<Task> =
     inputs.dir(jsEngineRoot)
     outputs.file(hermesImportCompilers)
     doLast {
-      if (hermesImportCompilers.exists()) return@doLast
+      if (ZiplineHost.isWindows) {
+        val binaryDir = hermesImportCompilers.parentFile
+        val cache = File(binaryDir, "CMakeCache.txt")
+        val compiler = cache.takeIf { it.isFile }?.readLines()
+          ?.firstOrNull { it.startsWith("CMAKE_CXX_COMPILER:") }
+          ?.substringAfter("=")
+          ?.trim()
+          .orEmpty()
+        // A cache left by MinGW or a 32-bit prompt keeps producing the wrong
+        // host compiler until the directory is configured again.
+        if (compiler.isNotEmpty() && !compiler.endsWith("cl.exe", ignoreCase = true)) {
+          binaryDir.deleteRecursively()
+        }
+      }
       val extra = if (ZiplineHost.isWindows) {
         listOf(
           "-DHERMES_UNICODE_LITE=ON",
@@ -774,8 +797,9 @@ val buildHermesHostLinuxX64: TaskProvider<Exec> =
   }
 
 // Windows host DLL. Built in-tree (not from the macOS static archives) so the
-// MSVC / MinGW link line stays inside CMake. Only registered on Windows; a
-// macOS publish still ships the dylibs and the Linux .so from the tasks above.
+// MSVC link line stays inside CMake. Only registered on Windows. The macOS
+// publish job does not cross-build this DLL yet, so a published jar has no
+// hermesvm.dll until that job grows a Windows artifact.
 val windowsHostArch: String = when (System.getProperty("os.arch").lowercase()) {
   "aarch64", "arm64" -> "aarch64"
   else -> "amd64"
@@ -822,19 +846,27 @@ val buildHermesHostWindows: TaskProvider<Task>? = if (!ZiplineHost.isWindows) {
 
 // Stage the host dylibs into the JVM jar resources; JsNativeLoader extracts
 // and System.load()s them from /jni/<arch>/ at runtime.
-val stageHermesHostDylibs: TaskProvider<Sync> =
-  tasks.register<Sync>("stageHermesHostDylibs") {
-    description = "Stage host libhermesvm dylibs into jvmMain resources"
-    group = "build"
-    into(projectDir.resolve("src/jvmMain/resources/jni"))
-    if (ZiplineHost.isWindows) {
-      from(buildHermesHostWindows!!) { into(windowsHostArch) }
-    } else {
+val stageHermesHostDylibs =
+  if (ZiplineHost.isWindows) {
+    // Copy, not Sync: libhermesvm.so lives in the same amd64 directory, and
+    // Sync would delete it (and the macOS dylibs) while staging the DLL.
+    tasks.register<Copy>("stageHermesHostDylibs") {
+      description = "Stage host hermesvm.dll into jvmMain resources"
+      group = "build"
+      from(buildHermesHostWindows!!)
+      into(projectDir.resolve("src/jvmMain/resources/jni/$windowsHostArch"))
+      duplicatesStrategy = DuplicatesStrategy.INCLUDE
+    }
+  } else {
+    tasks.register<Sync>("stageHermesHostDylibs") {
+      description = "Stage host libhermesvm dylibs into jvmMain resources"
+      group = "build"
+      into(projectDir.resolve("src/jvmMain/resources/jni"))
       from(buildHermesHostMacosArm64) { into("aarch64") }
       from(buildHermesHostMacosX64) { into("x86_64") }
       from(buildHermesHostLinuxX64) { into("amd64") }
+      outputs.dir(projectDir.resolve("src/jvmMain/resources/jni"))
     }
-    outputs.dir(projectDir.resolve("src/jvmMain/resources/jni"))
   }
 
 // Defense in depth for publish: if the staged jni resources are ever incomplete
@@ -847,6 +879,13 @@ val verifyHermesHostLibsStaged: TaskProvider<Task> =
     dependsOn(stageHermesHostDylibs)
     outputs.upToDateWhen { false }
     doLast {
+      if (ZiplineHost.isWindows) {
+        error(
+          "Refusing to publish from Windows. This host builds hermesvm.dll only " +
+            "and does not produce the macOS and Linux libraries, so the jar and " +
+            "its Gradle metadata would not match a macOS publish. Publish from macOS.",
+        )
+      }
       val jniDir = projectDir.resolve("src/jvmMain/resources/jni")
       val expected = mapOf(
         "aarch64" to "libhermesvm.dylib",

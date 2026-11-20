@@ -52,8 +52,10 @@ static inline std::string jsiClassOf(facebook::jsi::Runtime &rt, const facebook:
 
 // MSVC treats __declspec(dllexport) as part of the linkage. The definition in
 // ContextJni.cpp exports these symbols, so the earlier declaration must carry
-// the same attribute or the compiler reports C2375. Consumer TUs that only
-// call them leave ZIPLINE_BUILDING_JNI undefined.
+// the same attribute or the compiler reports C2375. The hermesvm_jni target
+// defines ZIPLINE_BUILDING_JNI. Consumer TUs that only call them leave it
+// undefined. These four are not also listed in hermesvm.def: a symbol exported
+// both ways is warning LNK4197.
 #if defined(_MSC_VER)
 #if defined(ZIPLINE_BUILDING_JNI)
 #define ZIPLINE_BRIDGE_API __declspec(dllexport)

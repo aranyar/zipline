@@ -21,7 +21,6 @@
 #include "ExceptionThrowers.h"
 #include "InboundCallChannel.h"
 #include "OutboundCallChannelJni.h"
-#define ZIPLINE_BUILDING_JNI
 #include "bridge_dispatch.h"
 
 #if defined(_MSC_VER)

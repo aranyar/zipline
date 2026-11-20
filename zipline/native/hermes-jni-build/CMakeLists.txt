@@ -426,6 +426,9 @@ elseif(WIN32)
   add_library(hermesvm_jni SHARED ${GLUE_CORE_SOURCES} ${GLUE_JNI_SOURCES})
   if(MSVC)
     target_sources(hermesvm_jni PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/hermesvm.def")
+    # Set before any include of bridge_dispatch.h. A #define halfway down
+    # ContextJni.cpp is too late if an earlier header pulls that file in.
+    target_compile_definitions(hermesvm_jni PRIVATE ZIPLINE_BUILDING_JNI)
   endif()
   target_include_directories(hermesvm_jni PRIVATE
     ${_GLUE_INCLUDES}

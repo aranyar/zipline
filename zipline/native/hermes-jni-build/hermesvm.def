@@ -97,7 +97,3 @@ EXPORTS
   HermesBridge_hasGlobalFunction
   HermesBridge_warmUpModule
   js_register_intrinsics
-  addBridgeEntry
-  addBridgeInit
-  init_all
-  register_all
