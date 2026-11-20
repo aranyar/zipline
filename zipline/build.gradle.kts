@@ -798,8 +798,7 @@ val buildHermesHostLinuxX64: TaskProvider<Exec> =
 
 // Windows host DLL. Built in-tree (not from the macOS static archives) so the
 // MSVC link line stays inside CMake. Only registered on Windows. The macOS
-// publish job does not cross-build this DLL yet, so a published jar has no
-// hermesvm.dll until that job grows a Windows artifact.
+// publish job copies a DLL built on windows-2022 from build/prebuilt-windows/.
 val windowsHostArch: String = when (System.getProperty("os.arch").lowercase()) {
   "aarch64", "arm64" -> "aarch64"
   else -> "amd64"
@@ -865,6 +864,13 @@ val stageHermesHostDylibs =
       from(buildHermesHostMacosArm64) { into("aarch64") }
       from(buildHermesHostMacosX64) { into("x86_64") }
       from(buildHermesHostLinuxX64) { into("amd64") }
+      // Present when CI has downloaded the windows-2022 artifact here before
+      // configuration. Sync would drop a DLL that was already in the
+      // destination and not listed as an input.
+      val prebuiltWindowsDll = layout.buildDirectory.file("prebuilt-windows/hermesvm.dll").get().asFile
+      if (prebuiltWindowsDll.isFile) {
+        from(prebuiltWindowsDll) { into("amd64") }
+      }
       outputs.dir(projectDir.resolve("src/jvmMain/resources/jni"))
     }
   }
@@ -887,16 +893,18 @@ val verifyHermesHostLibsStaged: TaskProvider<Task> =
         )
       }
       val jniDir = projectDir.resolve("src/jvmMain/resources/jni")
-      val expected = mapOf(
-        "aarch64" to "libhermesvm.dylib",
-        "x86_64" to "libhermesvm.dylib",
-        "amd64" to "libhermesvm.so",
+      val expected = listOf(
+        "aarch64/libhermesvm.dylib",
+        "x86_64/libhermesvm.dylib",
+        "amd64/libhermesvm.so",
+        "amd64/hermesvm.dll",
       )
-      val missing = expected.filter { (arch, lib) -> !File(jniDir, "$arch/$lib").isFile }
+      val missing = expected.filter { !File(jniDir, it).isFile }
       check(missing.isEmpty()) {
-        "Missing staged host native libraries: ${missing.values}. " +
-          "Run ./gradlew :zipline:stageHermesHostDylibs on a machine with the macOS SDK " +
-          "and the Linux cross toolchain (x86_64-linux-gnu-gcc or LINUX_SYSROOT) before publishing."
+        "Missing staged host native libraries: $missing. " +
+          "Build the macOS and Linux libraries on this host, and place the Windows " +
+          "hermesvm.dll at zipline/build/prebuilt-windows/hermesvm.dll before configuring Gradle. " +
+          "CI downloads that file from the windows-dll job."
       }
     }
   }
