@@ -27,11 +27,21 @@ special=$(find . ! -type f ! -type d -print)
 files=$(find . -type f | sed 's|^\./||' | sort)
 [ -n "$files" ] || fail "empty repository"
 
+# An artifact directory is `<group>/<artifact>`, or the directory of a Gradle plugin marker:
+# `<plugin id with dots as slashes>/<plugin id>.gradle.plugin`, for a plugin id inside our group.
+is_artifact_dir() {
+  local dir=$1
+  [[ $dir =~ ^$group_path/$name$ ]] && return 0
+  [[ $dir =~ ^($group_path(/$name)+)/($name)\.gradle\.plugin$ ]] \
+    && [ "${BASH_REMATCH[3]}" = "${BASH_REMATCH[1]//\//.}" ]
+}
+
 versions=$(
   while read -r file; do
-    if [[ $file =~ ^$group_path/$name/maven-metadata\.xml(\.[a-z0-9]+)?$ ]]; then
+    dir=${file%/*}
+    if is_artifact_dir "$dir" && [[ ${file##*/} =~ ^maven-metadata\.xml(\.[a-z0-9]+)?$ ]]; then
       continue
-    elif [[ $file =~ ^$group_path/$name/($name)/$name$ ]]; then
+    elif is_artifact_dir "${dir%/*}" && [[ $file =~ /($name)/$name$ ]]; then
       echo "${BASH_REMATCH[1]}"
     else
       fail "unexpected path: $file"
@@ -44,7 +54,7 @@ version=$versions
 
 # The build names PR snapshots `<version>-<head sha>-SNAPSHOT`; anything else could pass for a
 # release or for another PR's snapshot.
-[[ $version =~ ^[0-9A-Za-z.]+-${head_sha:0:7}-SNAPSHOT$ ]] \
+[[ $version =~ ^[0-9A-Za-z.-]+-${head_sha:0:7}-SNAPSHOT$ ]] \
   || fail "version $version is not a snapshot of ${head_sha:0:7}"
 
 # Metadata must not advertise any other version.
