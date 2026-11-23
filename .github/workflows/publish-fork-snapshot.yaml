@@ -1,5 +1,10 @@
 name: publish-fork-snapshot
 
+# workflow_run executes this file from the default branch, so the Actions UI
+# labels the run with that branch. Name the run and the approval job after the
+# fork branch that produced the artifact.
+run-name: Publish ${{ github.event.workflow_run.head_repository.full_name }}@${{ github.event.workflow_run.head_branch }}
+
 # Fork pull requests run `build` with a read-only token, so they can't publish their own snapshots.
 # This workflow picks up the `maven-repository` artifact of such a run and uploads it to GitHub
 # Packages after manual approval. It runs from the default branch and never executes anything from
@@ -22,6 +27,7 @@ permissions:
 jobs:
   # Unprivileged pre-check, so a failed build doesn't ask anyone for approval.
   check:
+    name: Check ${{ github.event.workflow_run.head_repository.full_name }}@${{ github.event.workflow_run.head_branch }}
     if: >-
       github.event.workflow_run.event == 'pull_request' &&
       github.event.workflow_run.head_repository.full_name != github.repository
@@ -43,6 +49,7 @@ jobs:
           echo "built=$([ "$conclusion" = success ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
   publish-snapshot:
+    name: Publish ${{ github.event.workflow_run.head_repository.full_name }}@${{ github.event.workflow_run.head_branch }}
     needs: check
     if: ${{ needs.check.outputs.built == 'true' }}
     runs-on: ubuntu-latest
@@ -80,10 +87,12 @@ jobs:
         env:
           VERSION: ${{ steps.validate.outputs.version }}
           HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
         run: |
           {
-            echo "Published \`$VERSION\` from $HEAD_REPOSITORY ([build]($RUN_URL)) to GitHub Packages:"
+            echo "Published \`$VERSION\` from \`$HEAD_REPOSITORY@$HEAD_BRANCH\` (\`${HEAD_SHA:0:7}\`, [build]($RUN_URL)) to GitHub Packages:"
             echo '```kotlin'
             echo "maven(\"https://maven.pkg.github.com/$GITHUB_REPOSITORY\") {"
             echo '  credentials { username = "<github user>"; password = "<token with read:packages>" }'
